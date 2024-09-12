@@ -32,6 +32,7 @@ sp1_lido_accounting_zk_shared = { path = "../shared", features = ["reqwest"] }
 tokio = "1.39.2"
 tree_hash = "0.6.0"
 alloy-primitives = "0.7.7"
+web3 = "0.19.0"
 
 [build-dependencies]
 sp1-helper = { git = "https://github.com/succinctlabs/sp1.git", tag="v1.1.0" }
