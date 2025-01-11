@@ -19,7 +19,7 @@ alloy-rlp = { version = "0.3.10", features = ["derive"] }
 alloy-primitives = { version = "0.8.18", features = ["serde", "rlp"] }
 alloy-sol-types = "0.8.18"
 anyhow = "1.0.95"
-derivative = "2.2.0"
+derive_more = { version = "1", features = ["debug"] }
 ethereum_hashing = "0.7.0"
 ethereum_serde_utils = "0.7.0"
 ethereum_ssz = "0.8.2"
