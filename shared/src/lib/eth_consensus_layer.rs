@@ -2,8 +2,8 @@ use core::fmt;
 
 use crate::merkle_proof::MerkleTreeFieldLeaves;
 
+use alloy_primitives::U256;
 use derivative::Derivative;
-use ethereum_types::{H160, H256, U256};
 use serde::{Deserialize, Serialize};
 use sp1_lido_accounting_zk_shared_merkle_tree_leaves_derive::MerkleTreeFieldLeaves;
 use ssz_derive::{Decode, Encode};
@@ -12,9 +12,9 @@ pub use ssz_types::{typenum, typenum::Unsigned, BitList, BitVector, FixedVector,
 use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
-pub type Address = H160;
+pub type Address = alloy_primitives::Address;
 pub type CommitteeIndex = u64;
-pub type Hash256 = H256;
+pub type Hash256 = alloy_primitives::B256;
 pub type Root = Hash256;
 pub type BlsPublicKey = FixedVector<u8, typenum::U48>;
 pub type ForkVersion = FixedVector<u8, typenum::U4>;

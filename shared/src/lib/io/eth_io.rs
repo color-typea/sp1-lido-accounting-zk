@@ -3,9 +3,9 @@ use std::{
     ops::{Add, Sub},
 };
 
+use alloy_primitives::Address;
 use alloy_sol_types::sol;
 use derivative::Derivative;
-use ethereum_types::Address;
 use serde::{Deserialize, Serialize};
 use tree_hash::TreeHash;
 use typenum::Unsigned;
@@ -26,8 +26,6 @@ mod derivatives {
 }
 
 pub mod conversions {
-    use crate::eth_consensus_layer::Address;
-
     pub fn u64_to_uint256(value: u64) -> alloy_primitives::U256 {
         value
             .try_into()
@@ -38,15 +36,6 @@ pub mod conversions {
         value
             .try_into()
             .unwrap_or_else(|_| panic!("Failed to convert {} to u64", value))
-    }
-
-    pub fn alloy_address_to_h160(value: alloy_primitives::Address) -> Address {
-        let addr_bytes: [u8; 20] = value.into();
-        addr_bytes.into()
-    }
-
-    pub fn h160_to_alloy_address(value: Address) -> alloy_primitives::Address {
-        value.to_fixed_bytes().into()
     }
 }
 
@@ -290,7 +279,7 @@ pub struct LidoWithdrawalVaultDataRust {
 impl From<LidoWithdrawalVaultDataSolidity> for LidoWithdrawalVaultDataRust {
     fn from(value: LidoWithdrawalVaultDataSolidity) -> Self {
         Self {
-            vault_address: conversions::alloy_address_to_h160(value.vault_address),
+            vault_address: value.vault_address,
             balance: value.balance,
         }
     }
@@ -299,7 +288,7 @@ impl From<LidoWithdrawalVaultDataSolidity> for LidoWithdrawalVaultDataRust {
 impl From<LidoWithdrawalVaultDataRust> for LidoWithdrawalVaultDataSolidity {
     fn from(value: LidoWithdrawalVaultDataRust) -> Self {
         Self {
-            vault_address: conversions::h160_to_alloy_address(value.vault_address),
+            vault_address: value.vault_address,
             balance: value.balance,
         }
     }
