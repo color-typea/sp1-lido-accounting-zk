@@ -124,6 +124,17 @@ pub fn prepare_program_input(
     (program_input, public_values)
 }
 
+// TODO: could be private, but used in input tampering tests
+pub fn compute_validators_and_balances_test_public(
+    bs: &BeaconState,
+    old_bs: &BeaconState,
+    old_validator_state: &LidoValidatorState,
+    lido_withdrawal_credentials: &Hash256,
+    verify: bool,
+) -> ValsAndBals {
+    compute_validators_and_balances(bs, old_bs, old_validator_state, lido_withdrawal_credentials, verify)
+}
+
 fn compute_validators_and_balances(
     bs: &BeaconState,
     old_bs: &BeaconState,
