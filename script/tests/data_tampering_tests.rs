@@ -229,7 +229,7 @@ const MODIFY_BEACON_BLOCK_HASH: bool = true;
 // time (1-2 minutes) and also incur proving costs.
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_no_tampering_should_pass() -> Result<()> {
+async fn data_tampering_no_tampering_should_pass() -> Result<()> {
     let executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
 
@@ -239,7 +239,7 @@ async fn tampering_no_tampering_should_pass() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_add_active_lido_validator() -> Result<()> {
+async fn data_tampering_add_active_lido_validator() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, |beacon_state| {
@@ -266,7 +266,7 @@ async fn tampering_add_active_lido_validator() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_add_pending_lido_validator() -> Result<()> {
+async fn data_tampering_add_pending_lido_validator() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, |beacon_state| {
@@ -293,7 +293,7 @@ async fn tampering_add_pending_lido_validator() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_add_exited_lido_validator() -> Result<()> {
+async fn data_tampering_add_exited_lido_validator() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, |beacon_state| {
@@ -320,7 +320,7 @@ async fn tampering_add_exited_lido_validator() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_add_active_non_lido_validator() -> Result<()> {
+async fn data_tampering_add_active_non_lido_validator() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, |beacon_state| {
@@ -347,7 +347,7 @@ async fn tampering_add_active_non_lido_validator() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_remove_lido_validator() -> Result<()> {
+async fn data_tampering_remove_lido_validator() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, |beacon_state| {
@@ -369,7 +369,7 @@ async fn tampering_remove_lido_validator() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_remove_multi_lido_validator() -> Result<()> {
+async fn data_tampering_remove_multi_lido_validator() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, |beacon_state| {
@@ -415,7 +415,7 @@ async fn tampering_remove_multi_lido_validator() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_change_lido_to_non_lido_validator() -> Result<()> {
+async fn data_tampering_change_lido_to_non_lido_validator() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, |beacon_state| {
@@ -432,7 +432,7 @@ async fn tampering_change_lido_to_non_lido_validator() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_change_non_lido_to_lido_validator() -> Result<()> {
+async fn data_tampering_change_non_lido_to_lido_validator() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, |beacon_state| {
@@ -449,7 +449,7 @@ async fn tampering_change_non_lido_to_lido_validator() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_change_lido_make_exited() -> Result<()> {
+async fn data_tampering_change_lido_make_exited() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, |beacon_state| {
@@ -466,7 +466,7 @@ async fn tampering_change_lido_make_exited() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_omit_new_deposited_lido_validator() -> Result<()> {
+async fn data_tampering_omit_new_deposited_lido_validator() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, |beacon_state| {
@@ -489,7 +489,7 @@ async fn tampering_omit_new_deposited_lido_validator() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_omit_exited_lido_validator() -> Result<()> {
+async fn data_tampering_omit_exited_lido_validator() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, |beacon_state| {
@@ -514,13 +514,13 @@ async fn tampering_omit_exited_lido_validator() -> Result<()> {
 // had no validators in pending state
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
-async fn tampering_omit_pending_lido_validator() -> Result<()> {
+async fn data_tampering_omit_pending_lido_validator() -> Result<()> {
     Ok(())
 }
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_balance_change_lido_validator_balance() -> Result<()> {
+async fn data_tampering_balance_change_lido_validator_balance() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, |beacon_state| {
@@ -537,7 +537,7 @@ async fn tampering_balance_change_lido_validator_balance() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_balance_change_multi_lido_validator_balance() -> Result<()> {
+async fn data_tampering_balance_change_multi_lido_validator_balance() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, |beacon_state| {
@@ -556,7 +556,7 @@ async fn tampering_balance_change_multi_lido_validator_balance() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_balance_change_lido_validator_balance_cancel_out() -> Result<()> {
+async fn data_tampering_balance_change_lido_validator_balance_cancel_out() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, |beacon_state| {
@@ -581,7 +581,7 @@ async fn tampering_balance_change_lido_validator_balance_cancel_out() -> Result<
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_withdrawal_vault_tampered_balance() -> Result<()> {
+async fn data_tampering_withdrawal_vault_tampered_balance() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     executor.set_withdrawal_vault_mutator(Box::new(|withdrawal_vault_data: WithdrawalVaultData| {
@@ -597,7 +597,7 @@ async fn tampering_withdrawal_vault_tampered_balance() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_withdrawal_vault_tampered_proof() -> Result<()> {
+async fn data_tampering_withdrawal_vault_tampered_proof() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     let other_slot = target_slot - 100;
@@ -616,7 +616,7 @@ async fn tampering_withdrawal_vault_tampered_proof() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn tampering_withdrawal_vault_different_slot() -> Result<()> {
+async fn data_tampering_withdrawal_vault_different_slot() -> Result<()> {
     let mut executor = TestExecutor::new().await?;
     let target_slot = executor.env.get_finalized_slot().await?;
     let other_slot = target_slot - 100;
