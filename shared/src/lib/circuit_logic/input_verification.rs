@@ -4,6 +4,7 @@ use alloy_primitives::keccak256;
 use alloy_rlp::Decodable;
 use eth_trie::{EthTrie, MemoryDB, Trie};
 use rs_merkle::{algorithms::Sha256, MerkleProof};
+use ssz_types::VariableList;
 use tree_hash::TreeHash;
 
 use crate::{
@@ -13,7 +14,10 @@ use crate::{
     eth_execution_layer::EthAccountRlpValue,
     eth_spec,
     hashing::{self, HashHelper, HashHelperImpl},
-    io::program_io::{ProgramInput, WithdrawalVaultData},
+    io::{
+        eth_io::HaveEpoch,
+        program_io::{ProgramInput, WithdrawalVaultData},
+    },
     lido::{LidoValidatorState, ValidatorDelta, ValidatorWithIndex},
     merkle_proof::{self, FieldProof, MerkleTreeFieldLeaves, StaticFieldProof},
     util::{u64_to_usize, usize_to_u64},
@@ -124,6 +128,10 @@ impl<'a, Tracker: CycleTracker> InputVerifier<'a, Tracker> {
         )
     }
 
+    fn is_sorted<Elem: PartialOrd, Size: typenum::Unsigned>(input: &VariableList<Elem, Size>) -> bool {
+        input.windows(2).all(|pair| pair[0] < pair[1])
+    }
+
     /**
      * Proves that the data passed into program is well-formed and correct
      *
@@ -158,6 +166,22 @@ impl<'a, Tracker: CycleTracker> InputVerifier<'a, Tracker> {
             hex::encode(beacon_block_header.state_root),
         );
         self.cycle_tracker.end_span("prove_input.beacon_state");
+
+        self.cycle_tracker.start_span("prove_input.old_state");
+        assert_eq!(
+            input.old_lido_validator_state.slot.epoch(),
+            input.old_lido_validator_state.epoch
+        );
+        self.cycle_tracker.start_span("prove_input.old_state.deposited.sorted");
+        let deposited_sorted = Self::is_sorted(&input.old_lido_validator_state.deposited_lido_validator_indices);
+        assert!(deposited_sorted, "Deposited validators should be sorted");
+        self.cycle_tracker.end_span("prove_input.old_state.deposited.sorted");
+
+        self.cycle_tracker.start_span("prove_input.old_state.pending.sorted");
+        let pending_sorted = Self::is_sorted(&input.old_lido_validator_state.pending_deposit_lido_validator_indices);
+        assert!(pending_sorted, "Deposited validators should be sorted");
+        self.cycle_tracker.end_span("prove_input.old_state.pending.sorted");
+        self.cycle_tracker.end_span("prove_input.old_state");
 
         // Validators and balances are included into BeaconState (merkle multiproof)
         let vals_and_bals_prefix = "prove_input.vals_and_bals";
@@ -323,7 +347,7 @@ impl<'a, Tracker: CycleTracker> InputVerifier<'a, Tracker> {
         let found = trie
             .verify_proof(expected_root.0.into(), key.as_slice(), proof)
             .unwrap_or_else(|_| panic!("Failed verifying account balance proof for {}", key));
-        let value = found.unwrap_or_else(|| panic!("Key {} not found in the accound patricia tree", key));
+        let value = found.unwrap_or_else(|| panic!("Key {} not found in the account patricia tree", key));
         let decoded = EthAccountRlpValue::decode(&mut value.as_slice())
             .unwrap_or_else(|e| panic!("Could not decode Account RLP encoding from tree: {:?}", e));
 
