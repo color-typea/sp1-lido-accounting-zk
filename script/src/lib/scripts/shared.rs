@@ -1,4 +1,4 @@
-use crate::validator_delta::ValidatorDeltaCompute;
+use crate::validator_delta::{ValidatorDeltaCompute, ValidatorDeltaComputeBeaconStateProjection};
 use alloy_sol_types::SolType;
 
 use sp1_sdk::SP1PublicValues;
@@ -142,7 +142,13 @@ fn compute_validators_and_balances(
     lido_withdrawal_credentials: &Hash256,
     verify: bool,
 ) -> ValsAndBals {
-    let validator_delta = ValidatorDeltaCompute::new(old_bs, old_validator_state, bs, !verify).compute();
+    let validator_delta = ValidatorDeltaCompute::new(
+        ValidatorDeltaComputeBeaconStateProjection::from_bs(old_bs),
+        old_validator_state,
+        ValidatorDeltaComputeBeaconStateProjection::from_bs(bs),
+        !verify,
+    )
+    .compute();
     log::info!(
         "Computed validator delta. Added: {}, lido changed: {}",
         validator_delta.all_added.len(),
