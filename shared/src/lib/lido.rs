@@ -218,13 +218,13 @@ impl ValidatorOps for Validator {
     }
 }
 
-#[derive(PartialEq, Debug, Serialize, Deserialize)]
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct ValidatorWithIndex {
     pub index: ValidatorIndex,
     pub validator: Validator,
 }
 
-#[derive(PartialEq, Debug, Serialize, Deserialize)]
+#[derive(PartialEq, Clone, Debug, Serialize, Deserialize)]
 pub struct ValidatorDelta {
     pub all_added: Vec<ValidatorWithIndex>,
     pub lido_changed: Vec<ValidatorWithIndex>,

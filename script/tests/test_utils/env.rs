@@ -8,7 +8,7 @@ use sp1_lido_accounting_scripts::{
 };
 
 use sp1_lido_accounting_zk_shared::{
-    eth_consensus_layer::BeaconState,
+    eth_consensus_layer::{BeaconBlockHeader, BeaconState},
     eth_spec,
     io::{
         eth_io::{BeaconChainSlot, HaveSlotWithBlock},
@@ -122,6 +122,10 @@ impl IntegrationTestEnvironment {
 
     pub fn clone_reader(&self) -> Arc<BeaconStateReaderEnum> {
         Arc::clone(&self.bs_reader)
+    }
+
+    pub async fn read_beacon_block_header(&self, state_id: &StateId) -> anyhow::Result<BeaconBlockHeader> {
+        self.bs_reader.read_beacon_block_header(state_id).await
     }
 
     pub async fn read_beacon_state(&self, state_id: &StateId) -> anyhow::Result<BeaconState> {

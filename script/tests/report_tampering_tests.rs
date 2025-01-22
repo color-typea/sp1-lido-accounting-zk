@@ -3,8 +3,7 @@ mod test_utils;
 use alloy_sol_types::SolType;
 use sp1_lido_accounting_scripts::{
     beacon_state_reader::{BeaconStateReader, StateId},
-    consts::{self, NetworkInfo, WrappedNetwork},
-    eth_client,
+    consts, eth_client,
     proof_storage::StoredProof,
     scripts::shared as shared_logic,
     sp1_client_wrapper::{SP1ClientWrapper, SP1ClientWrapperImpl},
@@ -23,7 +22,6 @@ use sp1_sdk::{HashableKey, ProverClient};
 use test_utils::env::IntegrationTestEnvironment;
 use thiserror::Error;
 
-static NETWORK: &WrappedNetwork = &test_utils::NETWORK;
 const STORED_PROOF_FILE_NAME: &str = "fixture.json";
 
 lazy_static! {
@@ -91,7 +89,7 @@ impl<M: Fn(PublicValuesRust) -> PublicValuesRust> TestExecutor<M> {
 
     async fn run_test(&self) -> TestExecutorResult {
         sp1_sdk::utils::setup_logger();
-        let lido_withdrawal_credentials: Hash256 = NETWORK.get_config().lido_withdrawal_credentials.into();
+        let lido_withdrawal_credentials: Hash256 = self.env.network_config().lido_withdrawal_credentials.into();
         let stored_proof = self.get_stored_proof()?;
 
         let reference_slot = stored_proof.report.reference_slot;
