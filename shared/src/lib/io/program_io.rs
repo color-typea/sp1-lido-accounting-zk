@@ -28,6 +28,16 @@ pub struct ProgramInput {
     pub withdrawal_vault_data: WithdrawalVaultData,
 }
 
+impl ProgramInput {
+    pub fn compute_new_state(&self) -> LidoValidatorState {
+        self.old_lido_validator_state.merge_validator_delta(
+            self.bc_slot,
+            &self.validators_and_balances.validators_delta,
+            &self.validators_and_balances.lido_withdrawal_credentials,
+        )
+    }
+}
+
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct ValsAndBals {
     pub validators_and_balances_proof: Vec<u8>,

@@ -172,12 +172,14 @@ impl LidoValidatorState {
             }
         }
 
-        let pending_deposit_vec: Vec<u64> = new_pending_deposit.into_iter().sorted().collect_vec();
-        let exited_deposit_vec: Vec<u64> = new_exited.into_iter().sorted().collect_vec();
+        // Sorts are important to ensure the validator state merkle hash is stable, regardless of the
+        // order of validators in delta
+        new_deposited.sort();
+        new_exited.sort();
 
         let deposited_list: ValidatorIndexList = new_deposited.into();
-        let pending_deposit_list: ValidatorIndexList = pending_deposit_vec.into();
-        let exited_list: ValidatorIndexList = exited_deposit_vec.into();
+        let pending_deposit_list: ValidatorIndexList = new_pending_deposit.into_iter().sorted().collect_vec().into();
+        let exited_list: ValidatorIndexList = new_exited.into();
 
         Self {
             slot,

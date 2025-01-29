@@ -4,7 +4,6 @@ use alloy_primitives::keccak256;
 use alloy_rlp::Decodable;
 use eth_trie::{EthTrie, MemoryDB, Trie};
 use rs_merkle::{algorithms::Sha256, MerkleProof};
-use ssz_types::VariableList;
 use tree_hash::TreeHash;
 
 use crate::{
@@ -103,11 +102,11 @@ impl<'a, Tracker: CycleTracker> InputVerifier<'a, Tracker> {
         self.cycle_tracker.end_span(&format!("{tracker_prefix}.verify_hash"));
     }
 
-    fn verify_delta(&self, delta: &ValidatorDelta, old_state: &LidoValidatorState, actual_valdiator_count: u64) {
+    fn verify_delta(&self, delta: &ValidatorDelta, old_state: &LidoValidatorState, actual_validator_count: u64) {
         let validator_from_delta = old_state.total_validators() + usize_to_u64(delta.all_added.len());
         assert!(
-            validator_from_delta == actual_valdiator_count,
-            "Not all new validators were passed - expected {validator_from_delta}, got {actual_valdiator_count}"
+            validator_from_delta == actual_validator_count,
+            "Not all new validators were passed - expected {validator_from_delta}, got {actual_validator_count}"
         );
 
         let lido_changed_indices: HashSet<u64> = delta.lido_changed_indices().copied().collect();
@@ -128,8 +127,20 @@ impl<'a, Tracker: CycleTracker> InputVerifier<'a, Tracker> {
         )
     }
 
-    fn is_sorted<Elem: PartialOrd, Size: typenum::Unsigned>(input: &VariableList<Elem, Size>) -> bool {
-        input.windows(2).all(|pair| pair[0] < pair[1])
+    // NOTE: mutable iterator - data is still immutable
+    fn is_sorted_and_unique<Elem: PartialOrd>(input: &mut impl Iterator<Item = Elem>) -> bool {
+        let next = input.next();
+        if next.is_none() {
+            return true; // empty iterator is sorted
+        }
+        let mut current = next.expect("Will not panic, just checked it is not none");
+        for new_val in input.by_ref() {
+            if current >= new_val {
+                return false;
+            }
+            current = new_val;
+        }
+        true
     }
 
     /**
@@ -173,13 +184,22 @@ impl<'a, Tracker: CycleTracker> InputVerifier<'a, Tracker> {
             input.old_lido_validator_state.epoch
         );
         self.cycle_tracker.start_span("prove_input.old_state.deposited.sorted");
-        let deposited_sorted = Self::is_sorted(&input.old_lido_validator_state.deposited_lido_validator_indices);
-        assert!(deposited_sorted, "Deposited validators should be sorted");
+        assert!(
+            Self::is_sorted_and_unique(&mut input.old_lido_validator_state.deposited_lido_validator_indices.iter()),
+            "Deposited validators should be sorted"
+        );
         self.cycle_tracker.end_span("prove_input.old_state.deposited.sorted");
 
         self.cycle_tracker.start_span("prove_input.old_state.pending.sorted");
-        let pending_sorted = Self::is_sorted(&input.old_lido_validator_state.pending_deposit_lido_validator_indices);
-        assert!(pending_sorted, "Deposited validators should be sorted");
+        assert!(
+            Self::is_sorted_and_unique(
+                &mut input
+                    .old_lido_validator_state
+                    .pending_deposit_lido_validator_indices
+                    .iter(),
+            ),
+            "Deposited validators should be sorted"
+        );
         self.cycle_tracker.end_span("prove_input.old_state.pending.sorted");
         self.cycle_tracker.end_span("prove_input.old_state");
 
@@ -242,6 +262,10 @@ impl<'a, Tracker: CycleTracker> InputVerifier<'a, Tracker> {
             .start_span(&format!("{vals_and_bals_prefix}.validator_inclusion_proofs"));
 
         if !input.validators_and_balances.validators_delta.all_added.is_empty() {
+            assert!(
+                Self::is_sorted_and_unique(&mut input.validators_and_balances.validators_delta.added_indices()),
+                "All added should be sorted by index and have no duplicates"
+            );
             let proof =
                 merkle_proof::serde::deserialize_proof(&input.validators_and_balances.added_validators_inclusion_proof)
                     .expect("Failed to deserialize proof");
@@ -271,6 +295,10 @@ impl<'a, Tracker: CycleTracker> InputVerifier<'a, Tracker> {
         }
 
         if !input.validators_and_balances.validators_delta.lido_changed.is_empty() {
+            assert!(
+                Self::is_sorted_and_unique(&mut input.validators_and_balances.validators_delta.lido_changed_indices()),
+                "Lido changed should be sorted by index and have no duplicates"
+            );
             let proof = merkle_proof::serde::deserialize_proof(
                 &input.validators_and_balances.changed_validators_inclusion_proof,
             )

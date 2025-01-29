@@ -16,8 +16,10 @@ pub mod tampering_bs;
 pub static NETWORK: WrappedNetwork = WrappedNetwork::Anvil(Network::Sepolia);
 // Original deploy slot for tests - 1 Lido validator, 1785 (?) total
 pub const DEPLOY_SLOT: BeaconChainSlot = BeaconChainSlot(5832096);
-// Alternative deploy slot for tests - 5 Lido validator, 1789 total
-pub const ALT_DEPLOY_SLOT: BeaconChainSlot = BeaconChainSlot(6789600);
+// Alternative deploy slot for tests - 5 Lido validators, exited: 0, 1789 total
+pub const ALT_DEPLOY_SLOT: BeaconChainSlot = BeaconChainSlot(5928800);
+// Alternative deploy slot for tests - 6 Lido validators, 2 exited, 1790 total
+pub const ALT_DEPLOY_SLOT_2: BeaconChainSlot = BeaconChainSlot(6789600);
 
 // TODO: Enable local prover if/when it becomes feasible.
 // In short, local proving with groth16 seems to not really work at the moment -
@@ -158,6 +160,13 @@ pub mod vecs {
         }
         new
     }
+
+    pub fn ensured_shuffle_keep_first<N: Clone + PartialEq>(input: &Vec<N>) -> Vec<N> {
+        assert!(input.len() > 2); // no point shuffling a single element
+        let mut new = input.clone();
+        new.splice(1.., ensured_shuffle(&new[1..]));
+        new
+    }
 }
 
 pub mod varlists {
@@ -226,5 +235,12 @@ pub mod varlists {
     ) -> VariableList<Elem, Size> {
         let as_vec = input.to_vec();
         vecs::ensured_shuffle(&as_vec).into()
+    }
+
+    pub fn ensured_shuffle_keep_first<Elem: Clone + PartialEq, Size: typenum::Unsigned>(
+        input: VariableList<Elem, Size>,
+    ) -> VariableList<Elem, Size> {
+        let mut as_vec = input.to_vec();
+        vecs::ensured_shuffle_keep_first(&as_vec).into()
     }
 }
