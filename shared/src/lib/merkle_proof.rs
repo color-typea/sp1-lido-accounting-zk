@@ -1,6 +1,6 @@
 use hex;
 use itertools::Itertools;
-use rs_merkle::{algorithms::Sha256, proof_serializers, MerkleProof, MerkleTree};
+use rs_merkle;
 use std::any::type_name;
 
 use ssz_types::VariableList;
@@ -11,18 +11,120 @@ use crate::hashing;
 
 use tree_hash::TreeHash;
 
+pub type MerkleHash = [u8; 32];
 type LeafIndex = usize;
-pub type RsMerkleHash = <Sha256 as rs_merkle::Hasher>::Hash;
 
 #[derive(Debug)]
 pub enum Error {
+    PreconditionError(String),
     ProofError(rs_merkle::Error),
     DeserializationError(rs_merkle::Error),
     HashesMistmatch(String, Hash256, Hash256),
 }
 
 const ZEROHASH: [u8; 32] = [0u8; 32];
-const ZEROHASH_H256: Hash256 = Hash256::ZERO;
+
+pub struct MerkleProofWrapper {
+    proof: rs_merkle::MerkleProof<rs_merkle::algorithms::Sha256>,
+}
+
+impl MerkleProofWrapper {
+    pub fn from_hashes(hashes: Vec<Hash256>, indices: &[LeafIndex]) -> Self {
+        // Quirk: rs_merkle does not pad to next power of two, ending up with a different merkle root
+        let pad_to = hashes.len().next_power_of_two();
+        assert!(
+            pad_to >= hashes.len(),
+            "Overflow happened finding the padding size: list len: {}, pad_to: {}",
+            hashes.len(),
+            pad_to
+        );
+        // Quirks:
+        // * rs_merkle produces different values for different sequences of indices - the "correct one" happens when indices are sorted
+        // * rs_merkle produces different values if indices are duplicated
+        // Solution: make them unique and sorted
+        let unique_sorted: Vec<LeafIndex> = indices.iter().unique().sorted().cloned().collect();
+
+        let leaves_vec: Vec<MerkleHash> = hashes
+            .iter()
+            .map(|val| val.0)
+            .pad_using(pad_to, |_i| ZEROHASH)
+            .collect();
+
+        let merkle_tree = rs_merkle::MerkleTree::<rs_merkle::algorithms::Sha256>::from_leaves(leaves_vec.as_slice());
+        Self {
+            proof: merkle_tree.proof(&unique_sorted),
+        }
+    }
+
+    pub fn from_instance<T>(instance: &T, field_names: &[T::TFields]) -> Self
+    where
+        T: MerkleTreeFieldLeaves + TreeHash + StaticFieldProof<T>,
+    {
+        Self::from_hashes(instance.tree_field_leaves(), &T::get_leafs_indices(field_names))
+    }
+
+    fn from_variable_list<T, N>(list: &VariableList<T, N>, indices: &[usize]) -> Self
+    where
+        T: TreeHash,
+        N: Unsigned,
+    {
+        let hashes = list.iter().map(|val| val.tree_hash_root()).collect();
+        Self::from_hashes(hashes, indices)
+    }
+
+    pub fn proof_hashes_hex(&self) -> Vec<String> {
+        self.proof.proof_hashes_hex()
+    }
+
+    pub fn build_root_from_proof(
+        &self,
+        total_leaves_count: usize,
+        indices: &[LeafIndex],
+        leaves_to_prove: &[MerkleHash],
+        expand_to_depth: Option<usize>,
+        mix_in_size: Option<usize>,
+    ) -> Result<Hash256, Error> {
+        // Quirk: rs_merkle does not seem pad trees to the next power of two, resulting in hashes that don't match
+        // ones computed by ssz
+        let leaves_count = total_leaves_count.next_power_of_two();
+
+        if leaves_count < leaves_to_prove.len() {
+            return Err(Error::PreconditionError(format!(
+                "Total number of elements {} must be >= the number of leafs to prove {}",
+                leaves_count,
+                leaves_to_prove.len()
+            )));
+        }
+        if indices.len() != leaves_to_prove.len() {
+            return Err(Error::PreconditionError(format!(
+                "Number of leafs {} != number of indices {}",
+                indices.len(),
+                leaves_to_prove.len()
+            )));
+        }
+        if !indices.iter().all_unique() {
+            return Err(Error::PreconditionError("Indices must be unique".to_owned()));
+        }
+
+        let mut root = self
+            .proof
+            .root(indices, leaves_to_prove, leaves_count)
+            .map_err(Error::ProofError)?
+            .into();
+
+        log::debug!("Main data hash {}", hex::encode(root));
+        if let Some(target_depth) = expand_to_depth {
+            let main_data_depth: usize = leaves_count.trailing_zeros() as usize;
+            root = hashing::pad_to_depth(&root, main_data_depth, target_depth);
+        }
+        if let Some(size) = mix_in_size {
+            log::debug!("Mixing in size {} to {}", size, hex::encode(root));
+            root = tree_hash::mix_in_length(&root, size);
+        }
+
+        Ok(root)
+    }
+}
 
 pub trait MerkleTreeFieldLeaves {
     const FIELD_COUNT: usize;
@@ -33,7 +135,12 @@ pub trait MerkleTreeFieldLeaves {
     }
 
     fn get_leaf_index(field_name: &Self::TFields) -> LeafIndex;
-    fn get_leafs_indices<const N: usize>(field_names: [Self::TFields; N]) -> [LeafIndex; N] {
+
+    fn get_leafs_indices(field_names: &[Self::TFields]) -> Vec<LeafIndex> {
+        field_names.iter().map(|v| Self::get_leaf_index(v)).collect()
+    }
+
+    fn get_leafs_indices_const<const N: usize>(field_names: &[Self::TFields; N]) -> [LeafIndex; N] {
         let mut result: [LeafIndex; N] = [0; N];
         for (idx, name) in field_names.iter().enumerate() {
             result[idx] = Self::get_leaf_index(name);
@@ -47,69 +154,23 @@ pub trait MerkleTreeFieldLeaves {
     fn get_fields(&self) -> Vec<Hash256>;
 
     fn tree_field_leaves(&self) -> Vec<Hash256> {
-        let field_leaves = self.get_fields();
-        let tree_leaf_count = Self::get_tree_leaf_count();
-        let padding = tree_leaf_count - Self::FIELD_COUNT;
-        let mut result = field_leaves.to_vec();
-        // Quirk: padding to the nearest power of 2 - rs_merkle doesn't seem to do it
-        result.extend(std::iter::repeat(ZEROHASH_H256).take(padding));
-
-        // Self-check
-        assert!(result.len() == tree_leaf_count);
-        result
+        self.get_fields()
     }
 }
 
 pub mod serde {
-    use super::{proof_serializers, Error, MerkleProof, Sha256};
+    use super::{Error, MerkleProofWrapper};
+    use rs_merkle::{proof_serializers, MerkleProof};
 
-    pub fn deserialize_proof(proof_bytes: &[u8]) -> Result<MerkleProof<Sha256>, Error> {
+    pub fn deserialize_proof(proof_bytes: &[u8]) -> Result<MerkleProofWrapper, Error> {
         MerkleProof::deserialize::<proof_serializers::DirectHashesOrder>(proof_bytes)
             .map_err(Error::DeserializationError)
+            .map(|proof| MerkleProofWrapper { proof })
     }
 
-    pub fn serialize_proof(proof: MerkleProof<Sha256>) -> Vec<u8> {
-        proof.serialize::<proof_serializers::DirectHashesOrder>()
+    pub fn serialize_proof(proof: MerkleProofWrapper) -> Vec<u8> {
+        proof.proof.serialize::<proof_serializers::DirectHashesOrder>()
     }
-}
-
-pub fn build_root_from_proof(
-    proof: &MerkleProof<Sha256>,
-    total_leaves_count: usize,
-    indices: &[LeafIndex],
-    leaves_to_prove: &[RsMerkleHash],
-    expand_to_depth: Option<usize>,
-    mix_in_size: Option<usize>,
-) -> Result<Hash256, Error> {
-    assert!(
-        total_leaves_count >= leaves_to_prove.len(),
-        "Total number of elements {} must be >= the number of leafs to prove {}",
-        total_leaves_count,
-        leaves_to_prove.len()
-    );
-    assert!(
-        indices.len() == leaves_to_prove.len(),
-        "Number of leafs {} != number of indices {}",
-        indices.len(),
-        leaves_to_prove.len()
-    );
-
-    let mut root = proof
-        .root(indices, leaves_to_prove, total_leaves_count)
-        .map_err(Error::ProofError)?
-        .into();
-
-    log::debug!("Main data hash {}", hex::encode(root));
-    if let Some(target_depth) = expand_to_depth {
-        let main_data_depth: usize = total_leaves_count.trailing_zeros() as usize;
-        root = hashing::pad_to_depth(&root, main_data_depth, target_depth);
-    }
-    if let Some(size) = mix_in_size {
-        log::debug!("Mixing in size {} to {}", size, hex::encode(root));
-        root = tree_hash::mix_in_length(&root, size);
-    }
-
-    Ok(root)
 }
 
 pub fn verify_hashes(expected: &Hash256, actual: &Hash256) -> Result<(), Error> {
@@ -125,57 +186,53 @@ pub fn verify_hashes(expected: &Hash256, actual: &Hash256) -> Result<(), Error> 
     Err(Error::HashesMistmatch(err_msg, *actual, *expected))
 }
 
-pub trait StaticFieldProof {
+pub trait StaticFieldProof<T: MerkleTreeFieldLeaves> {
     fn verify(
-        proof: &MerkleProof<Sha256>,
-        indices: &[LeafIndex],
-        leaves: &[RsMerkleHash],
+        proof: &MerkleProofWrapper,
+        indices: &[T::TFields],
+        leaves: &[MerkleHash],
         expected_hash: &Hash256,
     ) -> Result<(), Error>;
 }
 
-impl<T> StaticFieldProof for T
+impl<T> StaticFieldProof<T> for T
 where
     T: MerkleTreeFieldLeaves,
 {
     fn verify(
-        proof: &MerkleProof<Sha256>,
-        indices: &[LeafIndex],
-        leaves: &[RsMerkleHash],
+        proof: &MerkleProofWrapper,
+        indices: &[T::TFields],
+        leaves: &[MerkleHash],
         expected_hash: &Hash256,
     ) -> Result<(), Error> {
-        // Quirk: rs_merkle does not seem pad trees to the next power of two, resulting in hashes that don't match
-        // ones computed by ssz
-        assert!(
-            T::get_tree_leaf_count().is_power_of_two(),
-            "{}::TREE_FIELDS_LENGTH should be a power of two, got {}",
-            type_name::<T>(),
-            T::get_tree_leaf_count()
-        );
-        let root_from_proof = build_root_from_proof(proof, T::get_tree_leaf_count(), indices, leaves, None, None)?;
+        let field_indices: Vec<usize> = indices.iter().map(|v| T::get_leaf_index(v)).collect();
+        let root_from_proof =
+            proof.build_root_from_proof(T::get_tree_leaf_count(), &field_indices, leaves, None, None)?;
 
         verify_hashes(expected_hash, &root_from_proof)
     }
 }
 
 pub trait FieldProof {
-    fn get_members_multiproof(&self, indices: &[LeafIndex]) -> MerkleProof<Sha256>;
-    fn verify_instance(
-        &self,
-        proof: &MerkleProof<Sha256>,
-        indices: &[LeafIndex],
-        leafs: &[RsMerkleHash],
-    ) -> Result<(), Error>;
+    type LeafIndex;
+    fn get_members_multiproof(&self, indices: &[Self::LeafIndex]) -> MerkleProofWrapper;
 
-    fn get_serialized_multiproof(&self, indices: &[LeafIndex]) -> Vec<u8> {
+    fn get_serialized_multiproof(&self, indices: &[Self::LeafIndex]) -> Vec<u8> {
         serde::serialize_proof(self.get_members_multiproof(indices))
     }
+
+    fn verify_instance(
+        &self,
+        proof: &MerkleProofWrapper,
+        indices: &[Self::LeafIndex],
+        leafs: &[MerkleHash],
+    ) -> Result<(), Error>;
 
     fn verify_serialized(
         &self,
         proof_bytes: &Vec<u8>,
-        indices: &[LeafIndex],
-        leafs: &[RsMerkleHash],
+        indices: &[Self::LeafIndex],
+        leafs: &[MerkleHash],
     ) -> Result<(), Error> {
         let proof = serde::deserialize_proof(proof_bytes.as_slice())?;
 
@@ -185,22 +242,18 @@ pub trait FieldProof {
 
 impl<T> FieldProof for T
 where
-    T: MerkleTreeFieldLeaves + TreeHash + StaticFieldProof,
+    T: MerkleTreeFieldLeaves + TreeHash + StaticFieldProof<T>,
 {
-    fn get_members_multiproof(&self, indices: &[LeafIndex]) -> MerkleProof<Sha256> {
-        let leaves_as_h256 = self.tree_field_leaves();
-        let leaves_vec: Vec<RsMerkleHash> = leaves_as_h256.iter().map(|val| val.0).collect();
-
-        let merkle_tree = MerkleTree::<Sha256>::from_leaves(leaves_vec.as_slice());
-
-        merkle_tree.proof(indices)
+    type LeafIndex = T::TFields;
+    fn get_members_multiproof(&self, indices: &[Self::LeafIndex]) -> MerkleProofWrapper {
+        MerkleProofWrapper::from_instance(self, indices)
     }
 
     fn verify_instance(
         &self,
-        proof: &MerkleProof<Sha256>,
-        indices: &[LeafIndex],
-        leaves: &[RsMerkleHash],
+        proof: &MerkleProofWrapper,
+        indices: &[Self::LeafIndex],
+        leaves: &[MerkleHash],
     ) -> Result<(), Error> {
         Self::verify(proof, indices, leaves, &self.tree_hash_root())
     }
@@ -211,53 +264,34 @@ where
     T: TreeHash,
     N: Unsigned,
 {
-    fn get_members_multiproof(&self, indices: &[LeafIndex]) -> MerkleProof<Sha256> {
+    type LeafIndex = usize;
+
+    fn get_members_multiproof(&self, indices: &[LeafIndex]) -> MerkleProofWrapper {
         assert!(
             hashing::packing_factor::<T>() == 1,
             "Multiproof is not yet supported for type {} that involve packing",
             type_name::<T>()
         );
 
-        // Quirk: rs_merkle produces different values for different sequences of indices - the
-        // "correct one" happens when indices are sorted
-        let mut sorted = indices.to_vec();
-        sorted.sort();
-
-        // Quirk: rs_merkle does not pad to next power of two, ending up with a different merkle root
-        let pad_to = self.len().next_power_of_two();
-        assert!(pad_to >= self.len(), "Overflow finding the padding size");
-        let leaves: Vec<RsMerkleHash> = self
-            .iter()
-            .map(|val| val.tree_hash_root().0)
-            .pad_using(pad_to, |_i| ZEROHASH)
-            .collect();
-        assert!(leaves.len().is_power_of_two(), "Number of leaves must be a power of 2");
-
-        let merkle_tree = MerkleTree::<Sha256>::from_leaves(leaves.as_slice());
-        return merkle_tree.proof(sorted.as_slice());
+        MerkleProofWrapper::from_variable_list(self, indices)
     }
 
     fn verify_instance(
         &self,
-        proof: &MerkleProof<Sha256>,
-        indices: &[LeafIndex],
-        leaves: &[RsMerkleHash],
+        proof: &MerkleProofWrapper,
+        indices: &[Self::LeafIndex],
+        leaves: &[MerkleHash],
     ) -> Result<(), Error> {
         assert!(
             hashing::packing_factor::<T>() == 1,
             "multiproof is not yet supported for types that involve packing",
         );
 
-        // Quirk: rs_merkle does not pad to next power of two, ending up with a different merkle root
-        let total_leaves_count = self.len().next_power_of_two();
-        let target_depth = hashing::target_tree_depth::<T, N>();
-
-        let with_height = build_root_from_proof(
-            proof,
-            total_leaves_count,
+        let with_height = proof.build_root_from_proof(
+            self.len(),
             indices,
             leaves,
-            Some(target_depth),
+            Some(hashing::target_tree_depth::<T, N>()),
             Some(self.len()),
         )?;
 
@@ -267,6 +301,8 @@ where
 
 #[cfg(test)]
 mod test {
+    use alloy_primitives::U256;
+    use itertools::Itertools;
     use sp1_lido_accounting_zk_shared_merkle_tree_leaves_derive::MerkleTreeFieldLeaves;
     use ssz_types::VariableList;
     use tree_hash::TreeHash;
@@ -275,7 +311,7 @@ mod test {
 
     use crate::{eth_consensus_layer::Hash256, hashing};
 
-    use super::{build_root_from_proof, verify_hashes, FieldProof, MerkleTreeFieldLeaves, RsMerkleHash};
+    use super::{verify_hashes, FieldProof, LeafIndex, MerkleHash, MerkleTreeFieldLeaves};
 
     #[derive(Debug, Clone, PartialEq, TreeHash, MerkleTreeFieldLeaves)]
     pub struct GuineaPig {
@@ -290,22 +326,37 @@ mod test {
         }
     }
 
-    #[test]
-    fn struct_round_trip() {
-        let guinea_pig = GuineaPig::new(1, 2, Hash256::ZERO);
-
-        let indices = GuineaPig::get_leafs_indices([GuineaPigFields::uint1, GuineaPigFields::hash]);
-
-        let proof = guinea_pig.get_members_multiproof(&indices);
-        let leafs = [guinea_pig.uint1.tree_hash_root().0, guinea_pig.hash.tree_hash_root().0];
+    fn struct_round_trip(guinea_pig: GuineaPig, fields: &[<GuineaPig as MerkleTreeFieldLeaves>::TFields]) {
+        let proof = guinea_pig.get_members_multiproof(fields);
+        let all_leaves = guinea_pig.tree_field_leaves();
+        let target_indices = GuineaPig::get_leafs_indices(fields);
+        let target_leaves: Vec<MerkleHash> = target_indices.iter().map(|idx| all_leaves[*idx].0).collect();
         guinea_pig
-            .verify_instance(&proof, &indices, leafs.as_slice())
+            .verify_instance(&proof, fields, &target_leaves)
             .expect("Verification failed")
+    }
+
+    #[test]
+    fn test_struct_round_trip() {
+        struct_round_trip(GuineaPig::new(1, 2, Hash256::ZERO), &GuineaPigFields::all());
+        struct_round_trip(
+            GuineaPig::new(1, 2, Hash256::ZERO),
+            &[GuineaPigFields::hash, GuineaPigFields::uint1],
+        );
+        // Handling duplicates
+        // struct_round_trip(
+        //     GuineaPig::new(1, 2, Hash256::random()),
+        //     &[GuineaPigFields::hash, GuineaPigFields::hash],
+        // );
+        struct_round_trip(
+            GuineaPig::new(10, 20, Hash256::random()),
+            &[GuineaPigFields::uint2, GuineaPigFields::uint1],
+        );
     }
 
     fn test_list<N: Unsigned>(input: &[GuineaPig], target_indices: &[usize]) {
         let list: VariableList<GuineaPig, N> = input.to_vec().into();
-        let target_hashes: Vec<RsMerkleHash> = target_indices
+        let target_hashes: Vec<MerkleHash> = target_indices
             .iter()
             .map(|index| input[*index].tree_hash_root().0)
             .collect();
@@ -326,6 +377,7 @@ mod test {
         ];
 
         test_list::<typenum::U4>(&guinea_pigs, &[0, 2]);
+        // test_list::<typenum::U4>(&guinea_pigs, &[0, 0, 2]);
         test_list::<typenum::U4>(&guinea_pigs, &[2, 0]);
         test_list::<typenum::U9>(&guinea_pigs, &[0, 1]);
         test_list::<typenum::U31>(&guinea_pigs, &[0, 1, 2]);
@@ -344,21 +396,21 @@ mod test {
         let total_leaves_count = input.len().next_power_of_two();
         let target_depth = hashing::target_tree_depth::<GuineaPig, N>();
 
-        let target_hashes: Vec<RsMerkleHash> = target_indices
+        let target_hashes: Vec<MerkleHash> = target_indices
             .iter()
             .map(|index| input[*index].tree_hash_root().0)
             .collect();
 
         let proof = list.get_members_multiproof(target_indices);
-        let actiual_hash = build_root_from_proof(
-            &proof,
-            total_leaves_count,
-            target_indices,
-            target_hashes.as_slice(),
-            Some(target_depth),
-            Some(input.len()),
-        )
-        .expect("Failed to build hash");
+        let actiual_hash = proof
+            .build_root_from_proof(
+                total_leaves_count,
+                target_indices,
+                target_hashes.as_slice(),
+                Some(target_depth),
+                Some(input.len()),
+            )
+            .expect("Failed to build hash");
 
         verify_hashes(&actiual_hash, &expected_root).expect("Verification failed");
     }
@@ -375,6 +427,7 @@ mod test {
         ];
 
         test_list_against_hash::<typenum::U8>(&guinea_pigs, &[0, 2]);
+        // test_list_against_hash::<typenum::U8>(&guinea_pigs, &[0, 0, 2]);
         test_list_against_hash::<typenum::U8>(&guinea_pigs, &[2, 0]);
         test_list_against_hash::<typenum::U9>(&guinea_pigs, &[0, 1]);
         test_list_against_hash::<typenum::U31>(&guinea_pigs, &[0, 1, 2]);
@@ -384,5 +437,55 @@ mod test {
         test_list_against_hash::<typenum::U999>(&guinea_pigs, &[0, 1, 2, 3]);
         test_list_against_hash::<typenum::U999>(&guinea_pigs, &[3, 2, 1, 0]);
         test_list_against_hash::<typenum::U999>(&guinea_pigs, &[3, 1, 2, 0]);
+    }
+
+    #[test]
+    fn duplicate_handling() {
+        let raw_vec: Vec<U256> = [1u64, 2, 3, 4, 5, 6, 7, 8].iter().map(|v| U256::from(*v)).collect();
+        let list: VariableList<U256, typenum::U8> = raw_vec.into();
+        let total_leaves_count = list.len();
+        let expected_root = list.tree_hash_root();
+
+        let verify_indices: Vec<LeafIndex> = vec![2, 2, 3];
+        let proof_indices: Vec<LeafIndex> = verify_indices.iter().unique().sorted().cloned().collect();
+        let hashes: Vec<MerkleHash> = [
+            U256::from(3).tree_hash_root(),
+            U256::from(4).tree_hash_root(),
+            U256::from(12).tree_hash_root(),
+        ]
+        .iter()
+        .map(|v| v.0)
+        .collect();
+
+        let proof = list.get_members_multiproof(&proof_indices);
+        let target_depth = hashing::target_tree_depth::<u64, typenum::U8>();
+
+        let raw_proof_root = tree_hash::mix_in_length(
+            &hashing::pad_to_depth(
+                &proof
+                    .proof
+                    .root(&verify_indices, &hashes, total_leaves_count.next_power_of_two())
+                    .expect("Should succeed")
+                    .into(),
+                total_leaves_count.trailing_zeros() as usize,
+                target_depth,
+            ),
+            list.len(),
+        );
+        // Exposes rs_merkle allowing duplicates with
+        // See https://github.com/color-typea/sp1-lido-accounting-zk/issues/5
+        let raw_proof_result = verify_hashes(&raw_proof_root, &expected_root);
+        assert!(raw_proof_result.is_ok());
+
+        let wrapped_proof_root = proof.build_root_from_proof(
+            total_leaves_count,
+            &verify_indices,
+            &hashes,
+            Some(target_depth),
+            Some(list.len()),
+        );
+
+        // Demonstrates wrapper fixes the problem
+        assert!(wrapped_proof_root.is_err())
     }
 }
