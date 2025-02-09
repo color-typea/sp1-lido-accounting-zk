@@ -510,4 +510,311 @@ mod test {
         // Demonstrates wrapper fixes the problem
         assert!(wrapped_proof_root.is_err())
     }
+
+    mod proptests {
+        use std::collections::HashSet;
+
+        use alloy_primitives::U256;
+        use itertools::Itertools;
+        use proptest as prop;
+        use proptest::prelude::*;
+        use proptest_arbitrary_interop::arb;
+        use ssz_types::VariableList;
+        use tree_hash::TreeHash;
+
+        use crate::{eth_consensus_layer::Hash256, merkle_proof::FieldProof};
+
+        const MAX_INDICES: usize = 32;
+        const MAX_LIST_SIZE: usize = 32;
+        const MAX_MANIPULATIONS: usize = 32;
+
+        #[derive(Debug, Clone)]
+        struct TestData {
+            list: Vec<U256>,
+            prove_indices: Vec<usize>,
+        }
+
+        prop_compose! {
+            fn test_data_strategy(unique: bool)(
+                list in prop::collection::vec(arb::<U256>(), 1..=MAX_LIST_SIZE),
+                prove_indices_index in prop::collection::vec(any::<prop::sample::Index>(), 1..=MAX_INDICES),
+            ) -> TestData {
+                let prove_index_builder = prove_indices_index.iter().map(|idx| idx.index(list.len()));
+                let prove_indices: Vec<usize> = if unique {
+                    prove_index_builder.unique().collect()
+                } else {
+                    prove_index_builder.collect()
+                };
+                TestData {
+                    list,
+                    prove_indices
+                }
+            }
+        }
+
+        #[derive(Debug, Clone)]
+        struct Append {
+            item: U256,
+            index_in_list: usize,
+        }
+        #[derive(Debug, Clone)]
+        struct EditHash {
+            item: U256,
+            index_in_hashes: usize,
+        }
+        #[derive(Debug, Clone)]
+        struct Insert {
+            item: U256,
+            index_in_list: usize,
+            index_in_hashes: usize,
+        }
+
+        #[derive(Debug, Clone)]
+        enum Manipulation {
+            Append(Append),
+            EditHash(EditHash),
+            Insert(Insert),
+        }
+
+        #[derive(Debug, Clone)]
+        enum MultiManipulation {
+            Append { items: Vec<Append> },
+            EditHash { items: Vec<EditHash> },
+            Insert { items: Vec<Insert> },
+        }
+
+        prop_compose! {
+            fn append_strategy(test_data: TestData)(
+                item in arb::<U256>(),
+                append_index in any::<prop::sample::Index>()
+            ) -> Append {
+                Append{
+                    item,
+                    index_in_list: append_index.index(test_data.list.len()),
+                }
+            }
+        }
+
+        prop_compose! {
+            fn edit_hash_strategy(test_data: TestData)(
+                item in arb::<U256>(),
+                edit_index in any::<prop::sample::Index>()
+            ) -> EditHash {
+                EditHash{
+                    item,
+                    index_in_hashes: edit_index.index(test_data.prove_indices.len()),
+                }
+            }
+        }
+
+        prop_compose! {
+            fn insert_strategy(test_data: TestData)(
+                item in arb::<U256>(),
+                list_index in any::<prop::sample::Index>(),
+                insert_index in any::<prop::sample::Index>()
+            ) -> Insert {
+                Insert{
+                    item,
+                    index_in_list: list_index.index(test_data.list.len()),
+                    index_in_hashes: insert_index.index(test_data.prove_indices.len()),
+                }
+            }
+        }
+
+        fn single_manipulations_strategy(test_data: TestData) -> impl Strategy<Value = Manipulation> {
+            prop_oneof![
+                append_strategy(test_data.clone()).prop_map(Manipulation::Append),
+                edit_hash_strategy(test_data.clone()).prop_map(Manipulation::EditHash),
+                insert_strategy(test_data.clone()).prop_map(Manipulation::Insert)
+            ]
+        }
+
+        fn multi_manipulations_strategy(test_data: TestData) -> impl Strategy<Value = MultiManipulation> {
+            prop_oneof![
+                prop::collection::vec(append_strategy(test_data.clone()), 1..=MAX_MANIPULATIONS)
+                    .prop_map(|edits| MultiManipulation::Append { items: edits }),
+                prop::collection::vec(edit_hash_strategy(test_data.clone()), 1..=MAX_MANIPULATIONS)
+                    .prop_map(|edits| MultiManipulation::EditHash { items: edits }),
+                prop::collection::vec(insert_strategy(test_data.clone()), 1..=MAX_MANIPULATIONS)
+                    .prop_map(|edits| MultiManipulation::Insert { items: edits })
+            ]
+        }
+
+        fn data_and_single_manipulation_strategy(
+            unique_prove_indices: bool,
+        ) -> impl Strategy<Value = (TestData, Manipulation)> {
+            test_data_strategy(unique_prove_indices).prop_flat_map(|test_data| {
+                let test_data_strategy = Just(test_data.clone());
+                let manipulation_strategy = single_manipulations_strategy(test_data);
+                (test_data_strategy, manipulation_strategy)
+            })
+        }
+
+        fn data_and_multi_manipulation_strategy(
+            unique_prove_indices: bool,
+        ) -> impl Strategy<Value = (TestData, MultiManipulation)> {
+            test_data_strategy(unique_prove_indices).prop_flat_map(|test_data| {
+                let test_data_strategy = Just(test_data.clone());
+                let manipulation_strategy = multi_manipulations_strategy(test_data);
+                (test_data_strategy, manipulation_strategy)
+            })
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: 10000,
+                .. ProptestConfig::default()
+            })]
+            #[test]
+            fn test_wrapper_list_proof_manipulations(
+                (test_data, manipulation) in data_and_single_manipulation_strategy(false)
+            ) {
+                let list: VariableList<U256, typenum::U32> = test_data.list.into();
+                let proof = list.get_members_multiproof(&test_data.prove_indices);
+
+                let mut hashes: Vec<Hash256> = test_data.prove_indices.iter().map(|idx| list[*idx].tree_hash_root()).collect();
+                let mut verify_indices = test_data.prove_indices.clone();
+
+                match manipulation {
+                    Manipulation::Append(item) => {
+                        prop_assume!(list[item.index_in_list] != item.item);
+                        hashes.push(item.item.tree_hash_root());
+                        verify_indices.push(item.index_in_list);
+                    },
+                    Manipulation::EditHash(item) => {
+                        prop_assume!(list[test_data.prove_indices[item.index_in_hashes]] != item.item);
+                        hashes[item.index_in_hashes] = item.item.tree_hash_root();
+                    },
+                    Manipulation::Insert(item) => {
+                        prop_assume!(list[item.index_in_list] != item.item);
+                        hashes.insert(item.index_in_hashes, item.item.tree_hash_root());
+                        verify_indices.push(item.index_in_list);
+                    },
+                }
+                assert_eq!(hashes.len(), verify_indices.len());
+
+                let wrapped_proof_root = super::wrapped_proof_compute_ssz_list_hash(&list, &verify_indices, &hashes, proof);
+
+                if let Ok(hash) = wrapped_proof_root {
+                    assert!(hash != list.tree_hash_root());
+                } else {
+                    // Failing to produce hash is also fine
+                }
+            }
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                // Multiple manipulations have higher chance of producing invalid proof, so need more iterations to run
+                cases: 10000,
+                .. ProptestConfig::default()
+            })]
+            #[test]
+            fn test_wrapper_list_proof_multi_manipulations(
+                (test_data, manipulation) in data_and_multi_manipulation_strategy(false)
+            ) {
+                let list: VariableList<U256, typenum::U32> = test_data.list.into();
+                let proof = list.get_members_multiproof(&test_data.prove_indices);
+
+                let mut hashes: Vec<Hash256> = test_data.prove_indices.iter().map(|idx| list[*idx].tree_hash_root()).collect();
+                let mut verify_indices = test_data.prove_indices.clone();
+
+                match manipulation {
+                    MultiManipulation::Append { items } => {
+                        for item in items {
+                            prop_assume!(list[item.index_in_list] != item.item);
+                            hashes.push(item.item.tree_hash_root());
+                            verify_indices.push(item.index_in_list);
+                        }
+                    },
+                    MultiManipulation::EditHash { items } => {
+                        for item in items {
+                            prop_assume!(list[test_data.prove_indices[item.index_in_hashes]] != item.item);
+                            hashes[item.index_in_hashes] = item.item.tree_hash_root();
+                        }
+                    },
+                    MultiManipulation::Insert { items } => {
+                        for item in items {
+                            prop_assume!(list[item.index_in_list] != item.item);
+                            hashes.insert(item.index_in_hashes, item.item.tree_hash_root());
+                            verify_indices.push(item.index_in_list);
+                        }
+                    }
+                }
+                assert_eq!(hashes.len(), verify_indices.len());
+
+                let wrapped_proof_root = super::wrapped_proof_compute_ssz_list_hash(&list, &verify_indices, &hashes, proof);
+
+                if let Ok(hash) = wrapped_proof_root {
+                    assert!(hash != list.tree_hash_root());
+                } else {
+                    // Failing to produce hash is also fine
+                }
+            }
+        }
+
+        proptest! {
+            #[test]
+            fn test_wrapper_list_proof_unrelated_verification_indices(
+                test_data in test_data_strategy(true),
+                verify_indices_index in prop::collection::vec(any::<prop::sample::Index>(), 1..=MAX_INDICES),
+            ) {
+                let list: VariableList<U256, typenum::U32> = test_data.list.into();
+                let proof = list.get_members_multiproof(&test_data.prove_indices);
+
+                let verify_indices: Vec<usize> = verify_indices_index.iter().map(|idx| idx.index(list.len())).collect();
+
+                let special_case = list.len().is_power_of_two() && verify_indices.iter().cloned().collect::<HashSet<_>>() == (0..list.len()).collect();
+                prop_assume!(!special_case); // special case - see test_wrapper_list_proof_full_list_verification_power_of_2
+                let hashes: Vec<Hash256> = verify_indices.iter().map(|idx| list[*idx].tree_hash_root()).collect();
+
+                let verify_elems = verify_indices.iter().map(|idx| list[*idx]).collect::<HashSet<_>>();
+                let prove_elems = test_data.prove_indices.iter().map(|idx| list[*idx]).collect::<HashSet<_>>();
+
+                prop_assume!(verify_elems != prove_elems);
+
+                assert_eq!(hashes.len(), verify_indices.len());
+
+                let wrapped_proof_root = super::wrapped_proof_compute_ssz_list_hash(&list, &verify_indices, &hashes, proof);
+
+                if let Ok(hash) = wrapped_proof_root {
+                    assert!(hash != list.tree_hash_root());
+                } else {
+                    // Failing to produce hash is also fine
+                }
+            }
+        }
+
+        proptest! {
+            #[test]
+            fn test_wrapper_list_proof_full_list_verification_power_of_2(
+                raw_values in (0u32..=10).prop_flat_map(|num| prop::collection::vec(arb::<U256>(), 2usize.pow(num))),
+                prove_indices_index in prop::collection::vec(any::<prop::sample::Index>(), 1..=MAX_INDICES)
+            ) {
+                // QUIRK (?): potentially a rs-merkle quick, but verifying elements not included into the original proof
+                // still works, if _all_ actual elements are passed and list length is a power of two
+                // This is a bit unexpected, but does not produce a security/correctness risk - only possible to prove
+                // actually existing leafs. However, this is a bit unexpected, so codifying this in the
+                // test; if the underlying behavior changes to fail producing the output, this test can be safely removed
+                let list: VariableList<U256, typenum::U32> = raw_values.into();
+                let prove_indices: Vec<usize> = prove_indices_index.iter().map(|idx| idx.index(list.len())).collect();
+                let proof = list.get_members_multiproof(&prove_indices);
+
+                prop_assume!(list.len().is_power_of_two());
+
+                let verify_indices: Vec<usize> = (0..list.len()).collect();
+                let hashes: Vec<Hash256> = verify_indices.iter().map(|idx| list[*idx].tree_hash_root()).collect();
+
+                let verify_elems = verify_indices.iter().map(|idx| list[*idx]).collect::<HashSet<_>>();
+                let prove_elems = prove_indices.iter().map(|idx| list[*idx]).collect::<HashSet<_>>();
+
+                prop_assume!(verify_elems != prove_elems);
+                assert_eq!(hashes.len(), verify_indices.len());
+
+                let wrapped_proof_root = super::wrapped_proof_compute_ssz_list_hash(&list, &verify_indices, &hashes, proof);
+                let hash = wrapped_proof_root.expect("This should not fail");
+                assert!(hash == list.tree_hash_root());
+            }
+        }
+    }
 }
