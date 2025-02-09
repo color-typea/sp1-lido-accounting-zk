@@ -64,13 +64,13 @@ impl<'a, Tracker: CycleTracker> InputVerifier<'a, Tracker> {
 
         let validators_count = validators_with_indices.len();
         let mut indexes: Vec<usize> = Vec::with_capacity(validators_count);
-        let mut hashes: Vec<merkle_proof::MerkleHash> = Vec::with_capacity(validators_count);
+        let mut hashes: Vec<Hash256> = Vec::with_capacity(validators_count);
 
         self.cycle_tracker
             .start_span(&format!("{tracker_prefix}.validator_roots"));
         for validator_with_index in validators_with_indices {
             indexes.push(u64_to_usize(validator_with_index.index));
-            hashes.push(validator_with_index.validator.tree_hash_root().0);
+            hashes.push(validator_with_index.validator.tree_hash_root());
         }
         self.cycle_tracker
             .end_span(&format!("{tracker_prefix}.validator_roots"));
@@ -230,7 +230,7 @@ impl<'a, Tracker: CycleTracker> InputVerifier<'a, Tracker> {
         self.cycle_tracker
             .start_span(&format!("{vals_and_bals_prefix}.inclusion_proof"));
 
-        let vals_and_bals_multiproof_leaves = [beacon_state.validators.0, beacon_state.balances.0];
+        let vals_and_bals_multiproof_leaves = [beacon_state.validators, beacon_state.balances];
         beacon_state
             .verify_serialized(
                 &input.validators_and_balances.validators_and_balances_proof,
@@ -354,7 +354,7 @@ impl<'a, Tracker: CycleTracker> InputVerifier<'a, Tracker> {
         let proof =
             merkle_proof::serde::deserialize_proof(&input.latest_execution_header_data.state_root_inclusion_proof)
                 .expect("Failed to deserialize execution payload header proof");
-        let hashes: Vec<merkle_proof::MerkleHash> = vec![input.latest_execution_header_data.state_root.0];
+        let hashes: Vec<Hash256> = vec![input.latest_execution_header_data.state_root];
         ExecutionPayloadHeader::verify(&proof, &indices, &hashes, &beacon_state.latest_execution_payload_header)
             .expect("Failed to verify BeaconState.execution_payload_header.state_root inclusion proof");
         self.cycle_tracker

@@ -8,10 +8,7 @@ use sp1_lido_accounting_scripts::beacon_state_reader::{
     synthetic::{BalanceGenerationMode, GenerationSpec, SyntheticBeaconStateCreator},
     BeaconStateReader, StateId,
 };
-use sp1_lido_accounting_zk_shared::{
-    eth_consensus_layer::BeaconBlockHeaderFields,
-    merkle_proof::{FieldProof, MerkleHash},
-};
+use sp1_lido_accounting_zk_shared::{eth_consensus_layer::BeaconBlockHeaderFields, merkle_proof::FieldProof};
 use sp1_lido_accounting_zk_shared::{
     eth_consensus_layer::{BeaconBlockHeader, BeaconState, BeaconStateFields, Hash256},
     io::eth_io::BeaconChainSlot,
@@ -278,9 +275,9 @@ async fn main() {
     log::debug!("BeaconState proof hashes: {:?}", bs_proof.proof_hashes_hex());
 
     // Step 4.2: verify multiproof
-    let bs_leaves: Vec<MerkleHash> = vec![
-        beacon_state.validators.tree_hash_root().0,
-        beacon_state.balances.tree_hash_root().0,
+    let bs_leaves: Vec<Hash256> = vec![
+        beacon_state.validators.tree_hash_root(),
+        beacon_state.balances.tree_hash_root(),
     ];
     let verification_result = beacon_state.verify_instance(&bs_proof, &bs_indices, bs_leaves.as_slice());
     match verification_result {
@@ -296,7 +293,7 @@ async fn main() {
     log::debug!("BeaconBlockHeader proof hashes: {:?}", bh_proof.proof_hashes_hex());
 
     // Step 5.2: verify multiproof
-    let bh_leaves = vec![bs_merkle.0];
+    let bh_leaves = vec![bs_merkle];
     let verification_result = beacon_block_header.verify_instance(&bh_proof, &bh_indices, bh_leaves.as_slice());
     match verification_result {
         Ok(()) => log::info!("BeaconBlockHeader Verification succeeded"),
