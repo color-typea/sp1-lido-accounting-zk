@@ -347,15 +347,23 @@ mod test {
             GuineaPig::new(1, 2, Hash256::ZERO),
             &[GuineaPigFields::hash, GuineaPigFields::uint1],
         );
-        // Handling duplicates
-        // struct_round_trip(
-        //     GuineaPig::new(1, 2, Hash256::random()),
-        //     &[GuineaPigFields::hash, GuineaPigFields::hash],
-        // );
         struct_round_trip(
             GuineaPig::new(10, 20, Hash256::random()),
             &[GuineaPigFields::uint2, GuineaPigFields::uint1],
         );
+    }
+
+    #[test]
+    fn test_struct_duplicate_indices_fails() {
+        // Handling duplicates
+        let guinea_pig = GuineaPig::new(1, 2, Hash256::random());
+        let fields = [GuineaPigFields::hash, GuineaPigFields::hash];
+        let proof = guinea_pig.get_members_multiproof(&fields);
+        let all_leaves = guinea_pig.tree_field_leaves();
+        let target_indices = GuineaPig::get_leafs_indices(&fields);
+        let target_leaves: Vec<Hash256> = target_indices.iter().map(|idx| all_leaves[*idx]).collect();
+        let verification = guinea_pig.verify_instance(&proof, &fields, &target_leaves);
+        assert!(verification.is_err());
     }
 
     fn test_list<N: Unsigned>(input: &[GuineaPig], target_indices: &[usize]) {
@@ -381,7 +389,6 @@ mod test {
         ];
 
         test_list::<typenum::U4>(&guinea_pigs, &[0, 2]);
-        // test_list::<typenum::U4>(&guinea_pigs, &[0, 0, 2]);
         test_list::<typenum::U4>(&guinea_pigs, &[2, 0]);
         test_list::<typenum::U9>(&guinea_pigs, &[0, 1]);
         test_list::<typenum::U31>(&guinea_pigs, &[0, 1, 2]);
@@ -441,6 +448,27 @@ mod test {
         test_list_against_hash::<typenum::U999>(&guinea_pigs, &[0, 1, 2, 3]);
         test_list_against_hash::<typenum::U999>(&guinea_pigs, &[3, 2, 1, 0]);
         test_list_against_hash::<typenum::U999>(&guinea_pigs, &[3, 1, 2, 0]);
+    }
+
+    #[test]
+    fn variable_list_duplicate_indices_fails() {
+        let guinea_pigs = vec![
+            GuineaPig::new(1, 10, Hash256::ZERO),
+            GuineaPig::new(2, 20, Hash256::random()),
+            GuineaPig::new(3, 30, Hash256::random()),
+            GuineaPig::new(4, 40, Hash256::random()),
+            GuineaPig::new(5, 50, Hash256::random()),
+        ];
+        let target_indices = [0, 0, 2];
+        let list: VariableList<GuineaPig, typenum::U32> = guinea_pigs.to_vec().into();
+        let target_hashes: Vec<Hash256> = target_indices
+            .iter()
+            .map(|index| guinea_pigs[*index].tree_hash_root())
+            .collect();
+
+        let proof = list.get_members_multiproof(&target_indices);
+        let verification = list.verify_instance(&proof, &target_indices, target_hashes.as_slice());
+        assert!(verification.is_err())
     }
 
     fn rs_merkle_compute_ssz_list_hash<Item: TreeHash, N: typenum::Unsigned>(
