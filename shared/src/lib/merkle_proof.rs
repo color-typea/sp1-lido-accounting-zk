@@ -88,6 +88,32 @@ impl MerkleProofWrapper {
         // ones computed by ssz
         let leaves_count = total_leaves_count.next_power_of_two();
 
+        self._verify_build_root_from_proof(indices, element_hashes, leaves_count)?;
+
+        self._build_root(leaves_count, indices, element_hashes, expand_to_depth, mix_in_size)
+    }
+
+    #[cfg(test)]
+    pub fn build_root_from_proof_bypass_verify(
+        &self,
+        total_leaves_count: usize,
+        indices: &[LeafIndex],
+        element_hashes: &[Hash256],
+        expand_to_depth: Option<usize>,
+        mix_in_size: Option<usize>,
+    ) -> Result<Hash256, Error> {
+        // Quirk: rs_merkle does not seem pad trees to the next power of two, resulting in hashes that don't match
+        // ones computed by ssz
+        let leaves_count = total_leaves_count.next_power_of_two();
+        self._build_root(leaves_count, indices, element_hashes, expand_to_depth, mix_in_size)
+    }
+
+    fn _verify_build_root_from_proof(
+        &self,
+        indices: &[LeafIndex],
+        element_hashes: &[Hash256],
+        leaves_count: usize,
+    ) -> Result<(), Error> {
         if leaves_count < element_hashes.len() {
             return Err(Error::PreconditionError(format!(
                 "Total number of elements {} must be >= the number of leafs to prove {}",
@@ -105,7 +131,17 @@ impl MerkleProofWrapper {
         if !indices.iter().all_unique() {
             return Err(Error::PreconditionError("Indices must be unique".to_owned()));
         }
+        Ok(())
+    }
 
+    pub fn _build_root(
+        &self,
+        leaves_count: usize,
+        indices: &[LeafIndex],
+        element_hashes: &[Hash256],
+        expand_to_depth: Option<usize>,
+        mix_in_size: Option<usize>,
+    ) -> Result<Hash256, Error> {
         let mut leaf_hashes: Vec<MerkleHash> = Vec::with_capacity(element_hashes.len());
         for element_hash in element_hashes {
             leaf_hashes.push(element_hash.0);
@@ -315,7 +351,7 @@ mod test {
 
     use crate::{eth_consensus_layer::Hash256, hashing};
 
-    use super::{verify_hashes, FieldProof, LeafIndex, MerkleHash, MerkleTreeFieldLeaves};
+    use super::{verify_hashes, FieldProof, LeafIndex, MerkleTreeFieldLeaves};
 
     #[derive(Debug, Clone, PartialEq, TreeHash, MerkleTreeFieldLeaves)]
     pub struct GuineaPig {
@@ -471,35 +507,12 @@ mod test {
         assert!(verification.is_err())
     }
 
-    fn rs_merkle_compute_ssz_list_hash<Item: TreeHash, N: typenum::Unsigned>(
-        list: &VariableList<Item, N>,
-        verify_indices: &[usize],
-        element_hashes: &[Hash256],
-        proof: &super::MerkleProofWrapper,
-    ) -> alloy_primitives::FixedBytes<32> {
-        let list_len = list.len();
-        let target_depth = hashing::target_tree_depth::<Item, N>();
-        let leaf_hashes: Vec<MerkleHash> = element_hashes.iter().map(|e| e.0).collect();
-        tree_hash::mix_in_length(
-            &hashing::pad_to_depth(
-                &proof
-                    .proof
-                    .root(verify_indices, &leaf_hashes, list_len.next_power_of_two())
-                    .expect("Should succeed")
-                    .into(),
-                list_len.trailing_zeros() as usize,
-                target_depth,
-            ),
-            list_len,
-        )
-    }
-
     fn wrapped_proof_compute_ssz_list_hash<Item: TreeHash, N: typenum::Unsigned>(
         list: &VariableList<Item, N>,
         verify_indices: &[usize],
         element_hashes: &[Hash256],
         proof: super::MerkleProofWrapper,
-    ) -> Result<alloy_primitives::FixedBytes<32>, super::Error> {
+    ) -> Result<Hash256, super::Error> {
         let list_len = list.len();
         let target_depth = hashing::target_tree_depth::<Item, N>();
         proof.build_root_from_proof(
@@ -527,7 +540,12 @@ mod test {
 
         let proof = list.get_members_multiproof(&proof_indices);
 
-        let raw_proof_root = rs_merkle_compute_ssz_list_hash(&list, &verify_indices, &hashes, &proof);
+        let list_len = list.len();
+        let target_depth = hashing::target_tree_depth::<U256, typenum::U8>();
+
+        let raw_proof_root = proof
+            .build_root_from_proof_bypass_verify(list_len, &verify_indices, &hashes, Some(target_depth), Some(list_len))
+            .expect("Should not fail");
         // Exposes rs_merkle allowing duplicates with
         // See https://github.com/color-typea/sp1-lido-accounting-zk/issues/5
         let raw_proof_result = verify_hashes(&raw_proof_root, &expected_root);
