@@ -7,7 +7,7 @@ use crate::{
     },
     io::eth_io::{BeaconChainSlot, ReferenceSlot},
     lido::{LidoValidatorState, ValidatorDelta},
-    merkle_proof::{FieldProof, MerkleTreeFieldLeaves},
+    merkle_proof::FieldProof,
 };
 
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
