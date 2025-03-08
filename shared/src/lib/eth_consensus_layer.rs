@@ -7,6 +7,7 @@ use sp1_lido_accounting_zk_shared_merkle_tree_leaves_derive::MerkleTreeFieldLeav
 use ssz_derive::{Decode, Encode};
 pub use ssz_types::{typenum, typenum::Unsigned, BitList, BitVector, FixedVector, VariableList};
 
+use superstruct::superstruct;
 use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
@@ -162,7 +163,11 @@ pub struct PendingConsolidation {
 
 // Simplified https://github.com/sigp/lighthouse/blob/master/consensus/types/src/beacon_state.rs#L212
 // Primarily - flattening the "superstruct" part on different eth specs,
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode, TreeHash)]
+#[superstruct(
+    variants(Deneb, Electra),
+    variant_attributes(derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode, TreeHash)),
+    map_into(BeaconStatePrecomputedHashes)
+)]
 pub struct BeaconState {
     // Versioning
     // #[serde(with = "serde_utils::quoted_u64")]
@@ -226,21 +231,43 @@ pub struct BeaconState {
     pub historical_summaries: VariableList<HistoricalSummary, eth_spec::HistoricalRootsLimit>,
     // Electra
     // #[serde(with = "serde_utils::quoted_u64")]
+    #[superstruct(only(Electra))]
     pub deposit_requests_start_index: u64,
     // #[serde(with = "serde_utils::quoted_u64")]
+    #[superstruct(only(Electra))]
     pub deposit_balance_to_consume: Gwei,
     // #[serde(with = "serde_utils::quoted_u64")]
+    #[superstruct(only(Electra))]
     pub exit_balance_to_consume: Gwei,
+    #[superstruct(only(Electra))]
     pub earliest_exit_epoch: Epoch,
     // #[serde(with = "serde_utils::quoted_u64")]
+    #[superstruct(only(Electra))]
     pub consolidation_balance_to_consume: Gwei,
+    #[superstruct(only(Electra))]
     pub earliest_consolidation_epoch: Epoch,
+    #[superstruct(only(Electra))]
     pub pending_deposits: VariableList<PendingDeposit, eth_spec::PendingDepositsLimit>,
+    #[superstruct(only(Electra))]
     pub pending_partial_withdrawals: VariableList<PendingPartialWithdrawal, eth_spec::PendingPartialWithdrawalsLimit>,
+    #[superstruct(only(Electra))]
     pub pending_consolidations: VariableList<PendingConsolidation, eth_spec::PendingConsolidationsLimit>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode, TreeHash, MerkleTreeFieldLeaves)]
+#[superstruct(
+    variants(Deneb, Electra),
+    variant_attributes(derive(
+        Debug,
+        Clone,
+        PartialEq,
+        Serialize,
+        Deserialize,
+        Encode,
+        Decode,
+        TreeHash,
+        MerkleTreeFieldLeaves
+    ))
+)]
 pub struct BeaconStatePrecomputedHashes {
     // Versioning
     pub genesis_time: Hash256,
@@ -296,61 +323,71 @@ pub struct BeaconStatePrecomputedHashes {
     // Deep history valid from Capella onwards.
     pub historical_summaries: Hash256,
     // Electra
+    #[superstruct(only(Electra))]
     pub deposit_requests_start_index: Hash256,
     // #[serde(with = "serde_utils::quoted_u64")]
+    #[superstruct(only(Electra))]
     pub deposit_balance_to_consume: Hash256,
     // #[serde(with = "serde_utils::quoted_u64")]
+    #[superstruct(only(Electra))]
     pub exit_balance_to_consume: Hash256,
+    #[superstruct(only(Electra))]
     pub earliest_exit_epoch: Hash256,
     // #[serde(with = "serde_utils::quoted_u64")]
+    #[superstruct(only(Electra))]
     pub consolidation_balance_to_consume: Hash256,
+    #[superstruct(only(Electra))]
     pub earliest_consolidation_epoch: Hash256,
+    #[superstruct(only(Electra))]
     pub pending_deposits: Hash256,
+    #[superstruct(only(Electra))]
     pub pending_partial_withdrawals: Hash256,
+    #[superstruct(only(Electra))]
     pub pending_consolidations: Hash256,
 }
 
 impl From<&BeaconState> for BeaconStatePrecomputedHashes {
     fn from(value: &BeaconState) -> Self {
-        Self {
-            genesis_time: value.genesis_time.tree_hash_root(),
-            genesis_validators_root: value.genesis_validators_root.tree_hash_root(),
-            slot: value.slot.tree_hash_root(),
-            fork: value.fork.tree_hash_root(),
-            latest_block_header: value.latest_block_header.tree_hash_root(),
-            block_roots: value.block_roots.tree_hash_root(),
-            state_roots: value.state_roots.tree_hash_root(),
-            historical_roots: value.historical_roots.tree_hash_root(),
-            eth1_data: value.eth1_data.tree_hash_root(),
-            eth1_data_votes: value.eth1_data_votes.tree_hash_root(),
-            eth1_deposit_index: value.eth1_deposit_index.tree_hash_root(),
-            validators: value.validators.tree_hash_root(),
-            balances: value.balances.tree_hash_root(),
-            randao_mixes: value.randao_mixes.tree_hash_root(),
-            slashings: value.slashings.tree_hash_root(),
-            previous_epoch_participation: value.previous_epoch_participation.tree_hash_root(),
-            current_epoch_participation: value.current_epoch_participation.tree_hash_root(),
-            justification_bits: value.justification_bits.tree_hash_root(),
-            previous_justified_checkpoint: value.previous_justified_checkpoint.tree_hash_root(),
-            current_justified_checkpoint: value.current_justified_checkpoint.tree_hash_root(),
-            finalized_checkpoint: value.finalized_checkpoint.tree_hash_root(),
-            inactivity_scores: value.inactivity_scores.tree_hash_root(),
-            current_sync_committee: value.current_sync_committee.tree_hash_root(),
-            next_sync_committee: value.next_sync_committee.tree_hash_root(),
-            latest_execution_payload_header: value.latest_execution_payload_header.tree_hash_root(),
-            next_withdrawal_index: value.next_withdrawal_index.tree_hash_root(),
-            next_withdrawal_validator_index: value.next_withdrawal_validator_index.tree_hash_root(),
-            historical_summaries: value.historical_summaries.tree_hash_root(),
-            deposit_requests_start_index: value.deposit_requests_start_index.tree_hash_root(),
-            deposit_balance_to_consume: value.deposit_balance_to_consume.tree_hash_root(),
-            exit_balance_to_consume: value.exit_balance_to_consume.tree_hash_root(),
-            earliest_exit_epoch: value.earliest_exit_epoch.tree_hash_root(),
-            consolidation_balance_to_consume: value.consolidation_balance_to_consume.tree_hash_root(),
-            earliest_consolidation_epoch: value.earliest_consolidation_epoch.tree_hash_root(),
-            pending_deposits: value.pending_deposits.tree_hash_root(),
-            pending_partial_withdrawals: value.pending_partial_withdrawals.tree_hash_root(),
-            pending_consolidations: value.pending_consolidations.tree_hash_root(),
-        }
+        map_beacon_state_into_beacon_state_precomputed_hashes!(value, move |val, cons| { cons(val.into()) })
+        // Self {
+        //     genesis_time: value.genesis_time().tree_hash_root(),
+        //     genesis_validators_root: value.genesis_validators_root().tree_hash_root(),
+        //     slot: value.slot().tree_hash_root(),
+        //     fork: value.fork().tree_hash_root(),
+        //     latest_block_header: value.latest_block_header().tree_hash_root(),
+        //     block_roots: value.block_roots().tree_hash_root(),
+        //     state_roots: value.state_roots().tree_hash_root(),
+        //     historical_roots: value.historical_roots().tree_hash_root(),
+        //     eth1_data: value.eth1_data().tree_hash_root(),
+        //     eth1_data_votes: value.eth1_data_votes().tree_hash_root(),
+        //     eth1_deposit_index: value.eth1_deposit_index().tree_hash_root(),
+        //     validators: value.validators().tree_hash_root(),
+        //     balances: value.balances().tree_hash_root(),
+        //     randao_mixes: value.randao_mixes().tree_hash_root(),
+        //     slashings: value.slashings().tree_hash_root(),
+        //     previous_epoch_participation: value.previous_epoch_participation().tree_hash_root(),
+        //     current_epoch_participation: value.current_epoch_participation().tree_hash_root(),
+        //     justification_bits: value.justification_bits().tree_hash_root(),
+        //     previous_justified_checkpoint: value.previous_justified_checkpoint().tree_hash_root(),
+        //     current_justified_checkpoint: value.current_justified_checkpoint().tree_hash_root(),
+        //     finalized_checkpoint: value.finalized_checkpoint().tree_hash_root(),
+        //     inactivity_scores: value.inactivity_scores().tree_hash_root(),
+        //     current_sync_committee: value.current_sync_committee().tree_hash_root(),
+        //     next_sync_committee: value.next_sync_committee().tree_hash_root(),
+        //     latest_execution_payload_header: value.latest_execution_payload_header().tree_hash_root(),
+        //     next_withdrawal_index: value.next_withdrawal_index().tree_hash_root(),
+        //     next_withdrawal_validator_index: value.next_withdrawal_validator_index().tree_hash_root(),
+        //     historical_summaries: value.historical_summaries().tree_hash_root(),
+        //     deposit_requests_start_index: value.deposit_requests_start_index().tree_hash_root(),
+        //     deposit_balance_to_consume: value.deposit_balance_to_consume().tree_hash_root(),
+        //     exit_balance_to_consume: value.exit_balance_to_consume().tree_hash_root(),
+        //     earliest_exit_epoch: value.earliest_exit_epoch().tree_hash_root(),
+        //     consolidation_balance_to_consume: value.consolidation_balance_to_consume().tree_hash_root(),
+        //     earliest_consolidation_epoch: value.earliest_consolidation_epoch().tree_hash_root(),
+        //     pending_deposits: value.pending_deposits().tree_hash_root(),
+        //     pending_partial_withdrawals: value.pending_partial_withdrawals().tree_hash_root(),
+        //     pending_consolidations: value.pending_consolidations().tree_hash_root(),
+        // }
     }
 }
 
@@ -389,7 +426,7 @@ impl From<BeaconBlockHeader> for BeaconBlockHeaderPrecomputedHashes {
     }
 }
 
-pub type BeaconStateFields = BeaconStatePrecomputedHashesFields;
+pub type BeaconStateFields = BeaconStatePrecomputedHashesDenebFields;
 
 impl MerkleTreeFieldLeaves for BeaconState {
     const FIELD_COUNT: usize = 28;

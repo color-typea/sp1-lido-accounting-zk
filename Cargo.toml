@@ -47,6 +47,7 @@ sp1-helper = "4.0.1"
 sp1-sdk = {version = "4.0.1", features = ["network"] }
 sp1-zkvm = "4.0.1"
 ssz_types = { version = "0.10.0", features = ["arbitrary"] }
+superstruct = "0.8.0"
 thiserror = "2.0.11"
 tokio = "1.43.0"
 tracing = "0.1.41"

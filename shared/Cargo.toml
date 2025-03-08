@@ -31,6 +31,7 @@ rs_merkle.workspace = true
 serde_derive.workspace = true
 serde.workspace = true
 ssz_types.workspace = true
+superstruct.workspace = true
 tree_hash_derive.workspace = true
 tree_hash.workspace = true
 typenum.workspace = true
