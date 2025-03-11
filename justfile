@@ -56,6 +56,13 @@ update_fixtures target_slot previous_slot='0': build
         ./target/release/write_test_fixture --target-ref-slot {{target_slot}};\
     fi
 
+download_state target_slot format="ssz":
+    if [ {{format}} -eq 'ssz']; then \
+        curl -H "Accept:application/octet-stream" ${CONSENSUS_LAYER_RPC}/eth/v2/debug/beacon/states/{{target_slot}} > temp/beacon_states/$EVM_CHAIN/bs_{{target_slot}}.ssz;\
+    else \
+        curl -H "Accept:application/json" ${CONSENSUS_LAYER_RPC}/eth/v2/debug/beacon/states/{{target_slot}} > temp/beacon_states/$EVM_CHAIN/bs_{{target_slot}}.json;\
+    fi
+
 # implicitly depends on deploy, but it shouldn't run every time
 read_report target_slot:
     cast call $CONTRACT_ADDRESS "getReport(uint256)(bool,uint256,uint256,uint256,uint256)" "{{target_slot}}"
