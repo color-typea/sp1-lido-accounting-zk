@@ -108,17 +108,17 @@ test_shared:
 test_program:
     cargo test
 
+# building scripts starts multiple builds in parallel and often OOMs
+# -j 5 limits the concurrency for building (but not running) and avoids that
+# --test-threads 5 limits concurrency for running tests (sometimes it gets excited and runs too
+# many in parallel, consuming all the memory and grinding to a halt)
 [working-directory: 'crates/script']
 test_script:
-    # building scripts starts multiple builds in parallel and often OOMs
-    # -j 5 limits the concurrency for building (but not running) and avoids that
-    # --test-threads 5 limits concurrecny for running tests (sometimes it gets excited and runs too
-    # many in parallel, consuming all the memory and grinding to a halt)
     RUST_LOG=info cargo test -j 5 -- --test-threads=5 --nocapture
 
 [working-directory: 'crates/script']
 integration_test:
-    cargo test -j 5 --include-ignored
+    cargo test -j 5 -- --test-threads 5 --include-ignored
 
 test: test_contracts test_shared test_script
 

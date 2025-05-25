@@ -102,7 +102,7 @@ where
     }
 }
 
-impl<'a, T> BeaconStateReader for TamperableBeaconStateReader<'a, T>
+impl<T> BeaconStateReader for TamperableBeaconStateReader<'_, T>
 where
     T: BeaconStateReader + Sync,
 {
@@ -151,7 +151,7 @@ impl<'a> TestExecutor<'a> {
 
     async fn run_test(&self, target_slot: BeaconChainSlot) -> core::result::Result<(), TestError> {
         sp1_sdk::utils::setup_logger();
-        let lido_withdrawal_credentials: Hash256 = self.env.script_runtime.lido_settings.withdrawal_credentials.into();
+        let lido_withdrawal_credentials: Hash256 = self.env.script_runtime.lido_settings.withdrawal_credentials;
 
         let reference_slot = mark_as_refslot(target_slot);
         let previous_slot = self

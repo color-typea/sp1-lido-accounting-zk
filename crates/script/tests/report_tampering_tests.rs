@@ -10,6 +10,7 @@ use sp1_lido_accounting_scripts::{
     proof_storage::StoredProof,
     scripts::shared as shared_logic,
     sp1_client_wrapper::{SP1ClientWrapper, SP1ClientWrapperImpl},
+    tracing as tracing_config,
 };
 
 use hex_literal::hex;
@@ -62,7 +63,7 @@ impl<M: Fn(PublicValuesRust) -> PublicValuesRust> TestExecutor<M> {
     }
 
     async fn run_test(&self) -> TestExecutorResult {
-        sp1_sdk::utils::setup_logger();
+        tracing_config::setup_logger(tracing_config::LoggingConfig::default());
         let lido_withdrawal_credentials: Hash256 = self.env.script_runtime.lido_settings.withdrawal_credentials;
         let stored_proof = self.get_stored_proof()?;
 

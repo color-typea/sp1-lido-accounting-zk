@@ -1,8 +1,6 @@
 use anyhow::anyhow;
 use hex_literal::hex;
-use lazy_static::lazy_static;
-use sp1_lido_accounting_scripts::consts::{self, Network, NetworkInfo, WrappedNetwork};
-use sp1_lido_accounting_scripts::sp1_client_wrapper::SP1ClientWrapperImpl;
+use sp1_lido_accounting_scripts::consts::{Network, WrappedNetwork};
 use sp1_lido_accounting_zk_shared::eth_consensus_layer::{
     BeaconStateFields, BeaconStatePrecomputedHashes, Epoch, Hash256, Validator,
 };
@@ -27,6 +25,133 @@ pub fn eyre_to_anyhow(err: eyre::Error) -> anyhow::Error {
 #[cfg(test)]
 pub fn mark_as_refslot(slot: BeaconChainSlot) -> ReferenceSlot {
     ReferenceSlot(slot.0)
+}
+
+pub mod adjustments {
+    use sp1_lido_accounting_zk_shared::{
+        eth_consensus_layer::{BeaconBlockHeader, BeaconState, Validator},
+        io::eth_io::BeaconChainSlot,
+    };
+    use tree_hash::TreeHash;
+
+    pub struct Adjuster {
+        beacon_state: BeaconState,
+        block_header: BeaconBlockHeader,
+    }
+
+    impl Adjuster {
+        pub fn start_with(beacon_state: &BeaconState, block_header: &BeaconBlockHeader) -> Self {
+            Self {
+                beacon_state: beacon_state.clone(),
+                block_header: block_header.clone(),
+            }
+        }
+
+        pub fn set_slot(mut self, slot: &BeaconChainSlot) -> Self {
+            self.beacon_state.slot = slot.0;
+            self.block_header.slot = slot.0;
+            self
+        }
+
+        pub fn add_validator(mut self, validator: Validator, balance: u64) -> Self {
+            self.beacon_state
+                .validators
+                .push(validator)
+                .expect("Too many validators");
+            self.beacon_state.balances.push(balance).expect("Too many balances");
+            self
+        }
+
+        pub fn add_validators(mut self, validators: &[Validator], balances: &[u64]) -> Self {
+            assert_eq!(
+                validators.len(),
+                balances.len(),
+                "Validators and balances length mismatch"
+            );
+            for (validator, balance) in validators.iter().zip(balances.iter()) {
+                self = self.add_validator(validator.clone(), *balance);
+            }
+            self
+        }
+
+        pub fn set_validator(mut self, index: usize, validator: Validator) -> Self {
+            self.beacon_state.validators[index] = validator;
+            self
+        }
+
+        pub fn set_balance(mut self, index: usize, balance: u64) -> Self {
+            self.beacon_state.balances[index] = balance;
+            self
+        }
+
+        pub fn build(mut self) -> (BeaconState, BeaconBlockHeader) {
+            self.block_header.state_root = self.beacon_state.tree_hash_root();
+            (self.beacon_state, self.block_header)
+        }
+    }
+}
+
+pub mod validator {
+    use rand::Rng;
+    use sp1_lido_accounting_zk_shared::{
+        eth_consensus_layer::*,
+        io::eth_io::{BeaconChainSlot, HaveEpoch},
+    };
+
+    pub enum Status {
+        Pending(u64),
+        Active(u64),
+        Exited { activated: u64, exited: u64 },
+    }
+
+    impl Status {
+        pub fn pending(slot: BeaconChainSlot) -> Self {
+            Self::Pending(slot.epoch())
+        }
+        pub fn active(activation_slot: BeaconChainSlot) -> Self {
+            Self::Active(activation_slot.epoch())
+        }
+        pub fn exited(activation_slot: BeaconChainSlot, exit_slot: BeaconChainSlot) -> Self {
+            Self::Exited {
+                activated: activation_slot.epoch(),
+                exited: exit_slot.epoch(),
+            }
+        }
+    }
+
+    pub fn random_pubkey(prefix: Option<&[u8]>) -> BlsPublicKey {
+        let mut pubkey = [0u8; 48];
+        let mut rng = rand::rng();
+
+        // Fill with random bytes
+        rng.fill(&mut pubkey);
+
+        // Overwrite with prefix if provided
+        if let Some(p) = prefix {
+            let len = p.len().min(48);
+            pubkey[..len].copy_from_slice(&p[..len]);
+        }
+        pubkey.to_vec().into()
+    }
+
+    pub fn make(pubkey: BlsPublicKey, withdrawal_credentials: WithdrawalCredentials, status: Status) -> Validator {
+        let (activation_eligibility_epoch, activation_epoch, exit_epoch) = match status {
+            Status::Pending(epoch) => (epoch, u64::MAX, u64::MAX),
+            Status::Active(deposited) => (deposited - 1, deposited, u64::MAX),
+            Status::Exited { activated, exited } => (activated - 1, activated, exited),
+        };
+
+        Validator {
+            pubkey,
+            withdrawal_credentials,
+            effective_balance: 32 * 1_000_000_000,
+            slashed: false,
+            activation_eligibility_epoch,
+            activation_epoch,
+            exit_epoch,
+            withdrawable_epoch: activation_epoch,
+        }
+    }
 }
 
 pub fn make_validator(current_epoch: Epoch, balance: u64) -> Validator {
