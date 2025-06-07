@@ -8,7 +8,7 @@ verify_contract_cmd:=if verify_contract == "true" { "--verify" } else { "" }
 local_verify_cmd:=if local_verify_proof == "true" { "--local-verify" } else { "" }
 
 build:
-    cargo build --release
+    cargo build --release --locked
 
 switch_env env:
     rm -f .env && ln -s envs/.env.network.{{env}} .env
@@ -21,23 +21,23 @@ submit target_slot previous_slot='0': build
 execute target_slot previous_slot='0': build
     ./target/release/execute {{local_verify_cmd}} --target-ref-slot {{target_slot}} {{ if previous_slot != "0" { "--previous-ref-slot "+previous_slot } else { "" } }}
 
-run_service: build
+service_run: build
     ./target/release/service
 
 service_health:
     curl -X GET $SERVICE_BIND_TO_ADDR/health
 
 service_report_def:
-    curl -X POST -d '{}' $SERVICE_BIND_TO_ADDR/run-report -v
+    curl -X POST -d '{}' $SERVICE_BIND_TO_ADDR/run-report
 
 service_report target_slot='null' previous_slot='null':
-    curl -X POST -H "Content-Type: application/json" -d '{"previous_ref_slot": {{previous_slot}}, "target_ref_slot": {{target_slot}}}' $SERVICE_BIND_TO_ADDR/run-report -v
+    curl -X POST -H "Content-Type: application/json" -d '{"previous_ref_slot": {{previous_slot}}, "target_ref_slot": {{target_slot}}}' $SERVICE_BIND_TO_ADDR/run-report
 
 service_stats:
     curl -X GET $SERVICE_BIND_TO_ADDR/metrics
 
 # Deploy
-run_anvil:
+anvil_run:
     anvil --fork-url $FORK_URL
 
 write_manifesto target_slot: build
@@ -62,7 +62,10 @@ read_report target_slot:
     cast call $CONTRACT_ADDRESS "getReport(uint256)(bool,uint256,uint256,uint256,uint256)" "{{target_slot}}"
 ### Contract interactions ###
 
-# Development
+### Development ###
+store_report target_slot previous_slot: build
+    ./target/release/store_report --target-ref-slot {{target_slot}} --previous-ref-slot {{previous_slot}}
+
 update_fixtures target_slot previous_slot='0': build
     ./target/release/write_test_fixture --target-ref-slot {{target_slot}} {{ if previous_slot != "0" { "--previous-ref-slot "+previous_slot } else { "" } }}
 
@@ -82,6 +85,7 @@ read_validators target_slot:
     curl $CONSENSUS_LAYER_RPC/eth/v1/beacon/states/{{target_slot}}/validators > temp/vals_bals/$EVM_CHAIN/validators_{{target_slot}}.json
     curl $CONSENSUS_LAYER_RPC/eth/v1/beacon/states/{{target_slot}}/validator_balances > temp/vals_bals/$EVM_CHAIN/balances_{{target_slot}}.json
 
+### Testing ###
 [working-directory: 'contracts']
 test_contracts:
     forge test
@@ -108,8 +112,26 @@ integration_test:
 
 test: test_contracts test_shared test_program test_script
 
+
+### Updating metadata ###
 update_meta:
     cargo license --color never > metadata/deps_licenses.txt
     solidity-code-metrics contracts/src/*.sol  > metadata/solidity_report.md
     scc --by-file --format-multi "wide:metadata/audit_sloc.txt,json:metadata/audit_sloc.json" contracts/src crates/program/src/ crates/shared/src/lib crates/macros/**/src/
     scc --by-file --format-multi "wide:metadata/total_sloc.txt,json:metadata/total_sloc.json" ./
+
+
+### Docker
+docker_build:
+    docker build -t lido_sp1_oracle .
+
+docker_run:
+    # network: host is to allow connecting to anvil when run locally
+    # Practically just docker-compose for lazy
+    docker run --env-file .env --network host -v /tmp/lido-sp1-oracle:/tmp/lido-sp1-oracle lido_sp1_oracle:latest
+
+docker_shell:
+    docker run --env-file .env -it --network host -v /tmp/lido-sp1-oracle:/tmp/lido-sp1-oracle --rm --entrypoint /bin/bash lido_sp1_oracle:latest 
+
+docker_env:
+    docker run --env-file .env -it --rm lido_sp1_oracle:latest env
