@@ -97,6 +97,7 @@ async fn main() {
         Arc::new(prometheus_metrics::build_service_metrics(
             "irrelevant",
             "file_reader",
+            None,
         )),
     )
     .expect("Failed to create beacon state reader");

@@ -63,7 +63,11 @@ impl TestFiles {
     pub async fn read_beacon_state(&self, state_id: &StateId) -> Result<BeaconState> {
         let file_reader = FileBasedBeaconStateReader::new(
             &self.beacon_states(),
-            Arc::new(prometheus_metrics::build_service_metrics("irrelevant", "file_reader")),
+            Arc::new(prometheus_metrics::build_service_metrics(
+                "irrelevant",
+                "file_reader",
+                None,
+            )),
         )
         .expect("Failed to create file reader");
         file_reader
@@ -75,7 +79,11 @@ impl TestFiles {
     pub async fn read_beacon_block_header(&self, state_id: &StateId) -> Result<BeaconBlockHeader> {
         let file_reader = FileBasedBeaconStateReader::new(
             &self.beacon_states(),
-            Arc::new(prometheus_metrics::build_service_metrics("irrelevant", "file_reader")),
+            Arc::new(prometheus_metrics::build_service_metrics(
+                "irrelevant",
+                "file_reader",
+                None,
+            )),
         )
         .expect("Failed to create file reader");
         file_reader

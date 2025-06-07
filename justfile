@@ -24,11 +24,14 @@ execute target_slot previous_slot='0': build
 run_service: build
     ./target/release/service
 
+service_health:
+    curl -X GET $SERVICE_BIND_TO_ADDR/health
+
 service_report_def:
-    curl -X POST -d '{}' $SERVICE_BIND_TO_ADDR/run-report
+    curl -X POST -d '{}' $SERVICE_BIND_TO_ADDR/run-report -v
 
 service_report target_slot='null' previous_slot='null':
-    curl -X POST -d '{"previous_ref_slot": {{previous_slot}}, "target_ref_slot": {{target_slot}}}' $SERVICE_BIND_TO_ADDR/run-report
+    curl -X POST -H "Content-Type: application/json" -d '{"previous_ref_slot": {{previous_slot}}, "target_ref_slot": {{target_slot}}}' $SERVICE_BIND_TO_ADDR/run-report -v
 
 service_stats:
     curl -X GET $SERVICE_BIND_TO_ADDR/metrics

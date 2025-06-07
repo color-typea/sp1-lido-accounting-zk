@@ -281,17 +281,29 @@ fn counter_vec<TVal: Atomic>(namespace: &str, name: &str, help: &str, labels: &[
     GenericCounterVec::new(opts, labels).unwrap()
 }
 
-fn histogram(namespace: &str, name: &str, help: &str) -> Histogram {
-    let opts = HistogramOpts::new(name, help).namespace(namespace.to_string());
+fn histogram(namespace: &str, name: &str, help: &str, buckets_override: Option<Vec<f64>>) -> Histogram {
+    let mut opts = HistogramOpts::new(name, help).namespace(namespace.to_string());
+    if let Some(buckets) = buckets_override {
+        opts = opts.buckets(buckets)
+    }
     Histogram::with_opts(opts).unwrap()
 }
 
-fn histogram_vec(namespace: &str, name: &str, help: &str, labels: &[&str]) -> HistogramVec {
-    let opts = HistogramOpts::new(name, help).namespace(namespace.to_string());
+fn histogram_vec(
+    namespace: &str,
+    name: &str,
+    help: &str,
+    labels: &[&str],
+    buckets_override: Option<Vec<f64>>,
+) -> HistogramVec {
+    let mut opts = HistogramOpts::new(name, help).namespace(namespace.to_string());
+    if let Some(buckets) = buckets_override {
+        opts = opts.buckets(buckets)
+    }
     HistogramVec::new(opts, labels).unwrap()
 }
 
-pub fn build_service_metrics(namespace: &str, component: &str) -> Service {
+pub fn build_service_metrics(namespace: &str, component: &str, buckets: Option<Vec<f64>>) -> Service {
     Service {
         name: component.to_owned(),
         call_count: counter_vec(
@@ -311,6 +323,7 @@ pub fn build_service_metrics(namespace: &str, component: &str) -> Service {
             &format!("{component}_execution_time_seconds"),
             "Execution time in seconds",
             &["operation"],
+            buckets,
         ),
         status: counter_vec(
             namespace,
@@ -358,15 +371,42 @@ impl Metrics {
             state_changed_validators: gauge(namespace, "report__state_changed_validators", "Changed validators"),
         };
 
+        let service_duration_buckets = vec![0.1, 0.25, 0.5, 1.0, 3.0, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0];
+        let long_duration_buckets: Vec<f64> = [1, 5, 30, 60, 120, 300, 600, 1200, 1800, 3600, 5400, 7200]
+            .into_iter()
+            .map(|v| v as f64)
+            .collect();
+
         let services = Services {
-            eth_client: Arc::new(build_service_metrics(namespace, "eth_client")),
-            beacon_state_client: Arc::new(build_service_metrics(namespace, "beacon_state_client")),
-            hash_consensus: Arc::new(build_service_metrics(namespace, "hash_consensus")),
-            sp1_client: Arc::new(build_service_metrics(namespace, "sp1_client")),
+            eth_client: Arc::new(build_service_metrics(
+                namespace,
+                "eth_client",
+                Some(service_duration_buckets.clone()),
+            )),
+            beacon_state_client: Arc::new(build_service_metrics(
+                namespace,
+                "beacon_state_client",
+                Some(service_duration_buckets.clone()),
+            )),
+            hash_consensus: Arc::new(build_service_metrics(
+                namespace,
+                "hash_consensus",
+                Some(service_duration_buckets.clone()),
+            )),
+            sp1_client: Arc::new(build_service_metrics(
+                namespace,
+                "sp1_client",
+                Some(long_duration_buckets.clone()),
+            )),
         };
 
         let execution = Execution {
-            execution_time_seconds: histogram(namespace, "execution__execution_time_seconds", "Total execution time"),
+            execution_time_seconds: histogram(
+                namespace,
+                "execution__execution_time_seconds",
+                "Total execution time",
+                Some(long_duration_buckets.clone()),
+            ),
             sp1_cycle_count: gauge(namespace, "execution__sp1_cycle_count", "SP1 cycle count"),
             outcome: counter_vec(
                 namespace,

@@ -72,6 +72,10 @@ pub const DRY_RUN: EnvVarSpec = EnvVarSpec {
     key: "DRY_RUN",
     sensitive: false,
 };
+pub const REPORT_CYCLES: EnvVarSpec = EnvVarSpec {
+    key: "REPORT_CYCLES",
+    sensitive: false,
+};
 pub const SERVICE_BIND_TO_ADDR: EnvVarSpec = EnvVarSpec {
     key: "SERVICE_BIND_TO_ADDR",
     sensitive: false,

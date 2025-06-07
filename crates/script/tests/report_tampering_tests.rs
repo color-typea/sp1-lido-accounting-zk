@@ -200,7 +200,11 @@ fn assert_rejects(result: TestExecutorResult) -> Result<()> {
 fn check_vkey_matches() -> Result<()> {
     let sp1_client = SP1ClientWrapperImpl::new(
         ProverClient::from_env(),
-        Arc::new(prometheus_metrics::build_service_metrics("irrelevant", "sp1_client")),
+        Arc::new(prometheus_metrics::build_service_metrics(
+            "irrelevant",
+            "sp1_client",
+            None,
+        )),
     );
     let test_files = test_utils::files::TestFiles::new_from_manifest_dir();
     let proof = test_files.read_proof(STORED_PROOF_FILE_NAME)?;

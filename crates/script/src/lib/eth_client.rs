@@ -400,7 +400,7 @@ impl ProviderFactory {
     pub fn create_provider(key: k256::SecretKey, endpoint: Url) -> DefaultProvider {
         let signer: PrivateKeySigner = PrivateKeySigner::from(key);
         let wallet: EthereumWallet = EthereumWallet::from(signer);
-        ProviderBuilder::new().wallet(wallet).on_http(endpoint)
+        ProviderBuilder::new().wallet(wallet).connect_http(endpoint)
     }
 
     pub fn create_provider_decode_key(key_str: String, endpoint: Url) -> Result<DefaultProvider, ProviderError> {
