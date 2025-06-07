@@ -47,6 +47,7 @@ pub async fn service_main() {
             verify_proof: false,
             dry_run,
         },
+        run_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
 
     let env_vars_ref = &state.env_vars;
@@ -87,7 +88,7 @@ pub async fn service_main() {
         ])
         .set(1.0);
 
-    let shared_state = Arc::new(Mutex::new(state));
+    let shared_state = Arc::new(state);
 
     let maybe_scheduler_thread = scheduler::launch(Arc::clone(&shared_state), scheduler_span);
     let server_thread = server::launch(Arc::clone(&shared_state), service_span);

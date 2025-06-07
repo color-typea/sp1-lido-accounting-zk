@@ -5,13 +5,11 @@ use axum::{
     routing::{get, post},
     Extension, Router,
 };
-use prometheus::{Encoder, TextEncoder};
 use serde::{Deserialize, Serialize};
 
 use sp1_lido_accounting_scripts::utils::read_env;
 use sp1_lido_accounting_zk_shared::io::eth_io::ReferenceSlot;
 use std::{any::type_name_of_val, net::SocketAddr, sync::Arc, thread};
-use tokio::sync::Mutex;
 use tracing::{Instrument, Span};
 
 use crate::common::{run_submit, AppState};
@@ -22,7 +20,7 @@ struct RunReportParams {
     previous_ref_slot: Option<u64>,
 }
 
-pub fn launch(state: Arc<Mutex<AppState>>, parent_span: Span) -> thread::JoinHandle<()> {
+pub fn launch(state: Arc<AppState>, parent_span: Span) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("server".into())
         .spawn(move || {
@@ -32,7 +30,7 @@ pub fn launch(state: Arc<Mutex<AppState>>, parent_span: Span) -> thread::JoinHan
         .unwrap()
 }
 
-async fn run_server(state: Arc<Mutex<AppState>>, parent_span: Span) {
+async fn run_server(state: Arc<AppState>, parent_span: Span) {
     // Build routes
     let app = Router::new()
         .route("/health", get(health))
@@ -54,9 +52,7 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn metrics_handler(state: axum::extract::State<Arc<Mutex<AppState>>>) -> impl IntoResponse {
-    let state = state.lock().await;
-
+async fn metrics_handler(state: axum::extract::State<Arc<AppState>>) -> impl IntoResponse {
     match state.report_metrics() {
         Ok((buffer, format)) => Response::builder()
             .header("Content-Type", format)
@@ -82,12 +78,11 @@ enum RunReportResponse {
 }
 
 async fn run_report_handler(
-    state_extractor: axum::extract::State<Arc<Mutex<AppState>>>,
+    state: axum::extract::State<Arc<AppState>>,
     Query(params): Query<RunReportParams>,
     Extension(parent_span): Extension<Span>,
 ) -> (axum::http::StatusCode, axum::Json<RunReportResponse>) {
     async {
-        let state = state_extractor.lock().await;
         state
             .script_runtime
             .metrics
@@ -109,11 +104,20 @@ async fn run_report_handler(
                 (StatusCode::OK, Json(response_body))
             }
             Err(e) => {
-                let response_body = RunReportResponse::Error {
-                    kind: type_name_of_val(&e).to_string(),
-                    message: e.to_string(),
+                let (kind, message, status_code) = match e {
+                    crate::common::Error::AlreadyRunning => (
+                        type_name_of_val(&e).to_string(),
+                        e.to_string(),
+                        StatusCode::TOO_MANY_REQUESTS,
+                    ),
+                    crate::common::Error::SubmitError(underlying) => (
+                        type_name_of_val(&underlying).to_string(),
+                        underlying.to_string(),
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    ),
                 };
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(response_body))
+                let response_body = RunReportResponse::Error { kind, message };
+                (status_code, Json(response_body))
             }
         }
     }

@@ -19,8 +19,9 @@ cron = "0.15"
 chrono.workspace=true
 chrono-tz.workspace=true
 anyhow.workspace = true
-hex.workspace=true
-prometheus.workspace=true
+hex.workspace = true
+prometheus.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tower-http = { version = "0.6.4", features = ["trace"] }
 tracing.workspace=true

@@ -2,14 +2,12 @@ use chrono::Utc;
 use cron::Schedule;
 use sp1_lido_accounting_scripts::utils::read_env;
 use std::{env, sync::Arc, thread};
-use tokio::sync::Mutex;
 use tokio::time::Duration;
 use tracing::Span;
 
-use crate::common::run_submit;
-use crate::common::AppState;
+use crate::common::{run_submit, AppState, Error};
 
-async fn scheduler_loop(state: Arc<Mutex<AppState>>, schedule: Schedule, timezone: chrono_tz::Tz) {
+async fn scheduler_loop(state: Arc<AppState>, schedule: Schedule, timezone: chrono_tz::Tz) {
     let upcoming = schedule.upcoming(timezone);
 
     for next in upcoming {
@@ -27,8 +25,7 @@ async fn scheduler_loop(state: Arc<Mutex<AppState>>, schedule: Schedule, timezon
     }
 }
 
-async fn submit_report(state: Arc<Mutex<AppState>>) {
-    let state = state.lock().await;
+async fn submit_report(state: Arc<AppState>) {
     state
         .script_runtime
         .metrics
@@ -39,11 +36,14 @@ async fn submit_report(state: Arc<Mutex<AppState>>) {
     let result = run_submit(&state, None, None).await;
     match result {
         Ok(tx_hash) => tracing::info!("Successfully submitted report, txhash: {}", tx_hash),
-        Err(e) => tracing::error!("Failed to run: {e:?}"),
+        Err(e) => match e {
+            Error::AlreadyRunning => tracing::warn!("Already running - skipping scheduled run"),
+            Error::SubmitError(underlying) => tracing::error!("Failed to run: {underlying:?}"),
+        },
     }
 }
 
-pub fn launch(state: Arc<Mutex<AppState>>, parent_span: Span) -> Option<thread::JoinHandle<()>> {
+pub fn launch(state: Arc<AppState>, parent_span: Span) -> Option<thread::JoinHandle<()>> {
     let enabled = read_env("INTERNAL_SCHEDULER", false);
 
     if !enabled {
