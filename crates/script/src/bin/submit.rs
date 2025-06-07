@@ -20,6 +20,8 @@ struct ProveArgs {
     verify_input: bool,
     #[clap(long, required = false, default_value = "false")]
     verify_proof: bool,
+    #[clap(long, required = false, default_value = "false")]
+    report_cycles: bool,
 }
 
 #[tokio::main]
@@ -43,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
         verify_input: args.verify_input,
         verify_proof: args.verify_proof,
         dry_run: args.dry_run,
+        report_cycles: args.report_cycles,
     };
 
     let tx_hash = scripts::submit::run(

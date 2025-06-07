@@ -8,7 +8,8 @@ use sp1_lido_accounting_scripts::{
     scripts::{
         self,
         prelude::{
-            BeaconStateReaderEnum, EthInfrastructure, LidoInfrastructure, LidoSettings, Sp1Infrastructure, Sp1Settings,
+            BeaconStateReaderEnum, EthInfrastructure, Flags, LidoInfrastructure, LidoSettings, Sp1Infrastructure,
+            Sp1Settings,
         },
     },
     sp1_client_wrapper::{SP1ClientWrapper, SP1ClientWrapperImpl},
@@ -143,7 +144,10 @@ impl IntegrationTestEnvironment {
             lido_settings,
             sp1_settings,
             metrics,
-            false,
+            Flags {
+                dry_run: false,
+                report_cycles: false,
+            },
         );
 
         let instance = Self {

@@ -20,6 +20,7 @@ pub struct Flags {
     pub verify_input: bool,
     pub verify_proof: bool,
     pub dry_run: bool,
+    pub report_cycles: bool,
 }
 
 struct ResolvedSlotValues {
@@ -152,15 +153,20 @@ async fn run_with_span(
         return Ok(TxHash::default());
     }
 
-    let (_, execution_report) = runtime
-        .sp1_infra
-        .sp1_client
-        .execute(program_input.clone())
-        .inspect(|_proof| tracing::info!("Successfully obtained proof"))
-        .inspect_err(|e| {
-            tracing::error!("Failed to execute program locally: {e:?}");
-            bump_outcome(runtime, prometheus_metrics::outcome::ERROR)
-        })?;
+    let execution_report = if flags.report_cycles {
+        let (_, execution_report) = runtime
+            .sp1_infra
+            .sp1_client
+            .execute(program_input.clone())
+            .inspect(|_proof| tracing::info!("Successfully obtained proof"))
+            .inspect_err(|e| {
+                tracing::error!("Failed to execute program locally: {e:?}");
+                bump_outcome(runtime, prometheus_metrics::outcome::ERROR)
+            })?;
+        Some(execution_report)
+    } else {
+        None
+    };
 
     let report_timestamp = Utc::now().timestamp();
     // report metrics
@@ -169,7 +175,7 @@ async fn run_with_span(
         &resolved_slot_values,
         &program_input,
         &public_values,
-        &execution_report,
+        execution_report,
         report_timestamp,
     );
 
@@ -186,6 +192,7 @@ async fn run_with_span(
 
     if flags.verify_input {
         shared_logic::verify_public_values(&proof.public_values, &public_values)
+            .inspect(|_| tracing::info!("Successfully verified input LOCALLY (not on-chain)"))
             .inspect_err(|e| {
                 tracing::error!("Public values failed verification: {e:?}");
                 bump_outcome(runtime, prometheus_metrics::outcome::ERROR)
@@ -199,6 +206,7 @@ async fn run_with_span(
             .sp1_infra
             .sp1_client
             .verify_proof(&proof)
+            .inspect(|_| tracing::info!("Successfully verified the proof LOCALLY (not on-chain)"))
             .inspect_err(|e| {
                 tracing::error!("Failed to verify proof: {e:?}");
                 bump_outcome(runtime, prometheus_metrics::outcome::ERROR)
@@ -241,11 +249,14 @@ fn report_metrics(
     resolved_slot_values: &ResolvedSlotValues,
     program_input: &ProgramInput,
     public_values: &PublicValuesRust,
-    execution_report: &ExecutionReport,
+    execution_report: Option<ExecutionReport>,
     report_timestamp: i64,
 ) {
     metrics.report.refslot.set(resolved_slot_values.report_slot.0);
-    metrics.report.refslot.set(resolved_slot_values.report_slot.epoch());
+    metrics
+        .report
+        .refslot_epoch
+        .set(resolved_slot_values.report_slot.epoch());
     metrics.report.old_slot.set(resolved_slot_values.previous_slot.0);
     metrics.report.timestamp.set(report_timestamp);
 
@@ -277,8 +288,10 @@ fn report_metrics(
     metrics.report.state_new_validators.set(added);
     metrics.report.state_changed_validators.set(changed);
 
-    let total_cycles: u64 = execution_report.cycle_tracker.values().sum();
-    metrics.execution.sp1_cycle_count.set(total_cycles);
+    if let Some(exec_stats) = execution_report {
+        let total_cycles: u64 = exec_stats.cycle_tracker.values().sum();
+        metrics.execution.sp1_cycle_count.set(total_cycles);
+    }
 }
 
 pub async fn run(

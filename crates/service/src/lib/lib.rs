@@ -8,7 +8,6 @@ use sp1_lido_accounting_scripts::{
     utils::read_env,
 };
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 mod common;
 mod scheduler;
@@ -34,7 +33,8 @@ pub async fn service_main() {
         .metrics
         .register_on(&registry)
         .unwrap_or_else(|e| panic!("Failed to create metrics {e:?}"));
-    let dry_run = script_runtime.is_dry_run();
+    let dry_run = script_runtime.flags.dry_run;
+    let report_cycles = script_runtime.flags.report_cycles;
 
     tracing::info!(dry_run = dry_run, "DRY_RUN: {}", dry_run);
 
@@ -46,6 +46,7 @@ pub async fn service_main() {
             verify_input: true,
             verify_proof: false,
             dry_run,
+            report_cycles,
         },
         run_lock: Arc::new(tokio::sync::Mutex::new(())),
     };

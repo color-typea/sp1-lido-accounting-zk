@@ -24,6 +24,7 @@ use thiserror::Error;
 use alloy::transports::http::reqwest::Url;
 
 const DEFAULT_DRY_RUN: bool = true; // Fail close
+const DEFAULT_REPORT_CYCLES: bool = false; // Reporting cycles causes higher load on the current server
 const DEFAULT_PROMETHEUS_NAMESPACE: &str = "zk_accounting_sp1";
 
 #[derive(Debug, Error)]
@@ -141,6 +142,7 @@ impl RefSlotResolver for BeaconStateReaderEnum {
 pub struct EnvVars {
     pub log_format: EnvVarValue<LogFormat>,
     pub dry_run: EnvVarValue<bool>,
+    pub report_cycles: EnvVarValue<bool>,
     pub service_bind_to_addr: EnvVarValue<String>,
     pub internal_scheduler: EnvVarValue<String>,
     pub internal_scheduler_cron: EnvVarValue<String>,
@@ -171,6 +173,7 @@ impl EnvVars {
         Self {
             log_format: crate::env::LOG_FORMAT.required(),
             dry_run: crate::env::DRY_RUN.default(DEFAULT_DRY_RUN),
+            report_cycles: crate::env::REPORT_CYCLES.default(DEFAULT_REPORT_CYCLES),
             service_bind_to_addr: crate::env::SERVICE_BIND_TO_ADDR.required(),
             internal_scheduler: crate::env::INTERNAL_SCHEDULER.required(),
             internal_scheduler_cron: crate::env::INTERNAL_SCHEDULER_CRON.required(),
@@ -218,7 +221,8 @@ impl EnvVars {
         );
 
         if !only_important {
-            result.insert("service_bind_to_addr", self.service_bind_to_addr.value.clone());
+            result.insert("dry_run", self.dry_run.value.to_string());
+            result.insert("report_cycles", self.report_cycles.value.to_string());
             result.insert("internal_scheduler", self.internal_scheduler.value.clone());
             result.insert("internal_scheduler_cron", self.internal_scheduler_cron.value.clone());
             result.insert("internal_scheduler_tz", self.internal_scheduler_tz.value.clone());
@@ -273,7 +277,12 @@ pub struct ScriptRuntime {
     pub lido_settings: LidoSettings,
     pub sp1_settings: Sp1Settings,
     pub metrics: Metrics,
+    pub flags: Flags,
+}
+
+pub struct Flags {
     pub dry_run: bool,
+    pub report_cycles: bool,
 }
 
 impl ScriptRuntime {
@@ -284,7 +293,7 @@ impl ScriptRuntime {
         lido_settings: LidoSettings,
         sp1_settings: Sp1Settings,
         metrics: Metrics,
-        dry_run: bool,
+        flags: Flags,
     ) -> Self {
         Self {
             eth_infra,
@@ -293,7 +302,7 @@ impl ScriptRuntime {
             lido_settings,
             sp1_settings,
             metrics,
-            dry_run,
+            flags,
         }
     }
 
@@ -342,7 +351,10 @@ impl ScriptRuntime {
                 verifier_address: env_vars.sp1_verifier_address.value,
             },
             metrics,
-            env_vars.dry_run.value,
+            Flags {
+                dry_run: env_vars.dry_run.value,
+                report_cycles: env_vars.report_cycles.value,
+            },
         );
         Ok(result)
     }
@@ -360,6 +372,6 @@ impl ScriptRuntime {
     }
 
     pub fn is_dry_run(&self) -> bool {
-        self.dry_run
+        self.flags.dry_run
     }
 }
