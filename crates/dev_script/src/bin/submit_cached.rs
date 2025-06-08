@@ -32,11 +32,14 @@ async fn main() {
         .expect("failed to read cached proof");
 
     tracing::info!("Sending report");
-    let tx_hash = script_runtime
+    let tx_receipt = script_runtime
         .lido_infra
         .report_contract
         .submit_report_data(stored_proof.proof, stored_proof.public_values.to_vec())
         .await
         .expect("Failed to submit report");
-    tracing::info!("Report transaction complete {}", hex::encode(tx_hash));
+    tracing::info!(
+        "Report transaction complete {:#?}",
+        tx_receipt.transaction_hash
+    );
 }

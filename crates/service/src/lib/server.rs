@@ -1,4 +1,5 @@
 use axum::{
+    debug_handler,
     extract::{Json, Query},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -7,8 +8,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use sp1_lido_accounting_scripts::utils::read_env;
-use sp1_lido_accounting_zk_shared::io::eth_io::ReferenceSlot;
+use sp1_lido_accounting_scripts::{
+    eth_client::Sp1LidoAccountingReportContract::Report, utils::read_env,
+};
+use sp1_lido_accounting_zk_shared::io::eth_io::{BeaconChainSlot, ReferenceSlot, ReportRust};
 use std::{any::type_name_of_val, net::SocketAddr, sync::Arc, thread};
 use tracing::{Instrument, Span};
 
@@ -18,6 +21,11 @@ use crate::common::{run_submit, AppState};
 struct RunReportParams {
     target_ref_slot: Option<u64>,
     previous_ref_slot: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct GetReportParams {
+    target_slot: Option<u64>,
 }
 
 pub fn launch(state: Arc<AppState>, parent_span: Span) -> thread::JoinHandle<()> {
@@ -36,6 +44,7 @@ async fn run_server(state: Arc<AppState>, parent_span: Span) {
         .route("/health", get(health))
         .route("/metrics", get(metrics_handler))
         .route("/run-report", post(run_report_handler))
+        .route("/get-report", get(get_report_handler))
         .layer(Extension(parent_span.clone()))
         .with_state(state);
 
@@ -74,6 +83,12 @@ async fn metrics_handler(state: axum::extract::State<Arc<AppState>>) -> impl Int
 #[derive(Serialize, Deserialize)]
 enum RunReportResponse {
     Success { tx_hash: String },
+    Error { kind: String, message: String },
+}
+
+#[derive(Serialize, Deserialize)]
+enum GetReportResponse {
+    Success { report: ReportRust },
     Error { kind: String, message: String },
 }
 
@@ -123,4 +138,47 @@ async fn run_report_handler(
     }
     .instrument(parent_span)
     .await
+}
+
+async fn get_report_handler(
+    state: axum::extract::State<Arc<AppState>>,
+    Query(params): Query<GetReportParams>,
+    Extension(parent_span): Extension<Span>,
+) -> (axum::http::StatusCode, axum::Json<GetReportResponse>) {
+    async {
+        let result = get_report_handler_impl(&state, params.target_slot).await;
+        match result {
+            Ok(report) => {
+                let response_body = GetReportResponse::Success { report };
+                (StatusCode::OK, Json(response_body))
+            }
+            Err(e) => {
+                let response_body = GetReportResponse::Error {
+                    kind: type_name_of_val(&e).to_string(),
+                    message: e.to_string(),
+                };
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(response_body))
+            }
+        }
+    }
+    .instrument(parent_span)
+    .await
+}
+
+async fn get_report_handler_impl(
+    state: &AppState,
+    target_slot: Option<u64>,
+) -> anyhow::Result<ReportRust> {
+    let contract = &state.script_runtime.lido_infra.report_contract;
+    let target_slot = if let Some(target_slot) = target_slot {
+        target_slot
+    } else {
+        contract.get_latest_validator_state_slot().await?.0
+    };
+
+    let result = contract
+        .get_report(ReferenceSlot(target_slot))
+        .await
+        .map_err(|e| anyhow::anyhow!("Error fetching latest report {e:?}"))?;
+    Ok(result)
 }

@@ -48,13 +48,13 @@ async fn main() -> anyhow::Result<()> {
         report_cycles: args.report_cycles,
     };
 
-    let tx_hash = scripts::submit::run(
+    let tx_receipt = scripts::submit::run(
         &script_runtime,
         args.target_ref_slot.map(ReferenceSlot),
         args.previous_ref_slot.map(ReferenceSlot),
         &flags,
     )
     .await?;
-    tracing::info!("Report transaction complete {}", hex::encode(tx_hash));
+    tracing::info!("Report transaction complete {:#?}", tx_receipt.transaction_hash);
     Ok(())
 }

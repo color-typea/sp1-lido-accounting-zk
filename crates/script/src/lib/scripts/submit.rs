@@ -5,7 +5,8 @@ use crate::scripts::shared as shared_logic;
 use crate::sp1_client_wrapper::SP1ClientWrapper;
 
 use crate::scripts::prelude::ScriptRuntime;
-use alloy_primitives::{Address, TxHash};
+use alloy::rpc::types::TransactionReceipt;
+use alloy_primitives::Address;
 use anyhow::{self, Context};
 use chrono::Utc;
 use sp1_lido_accounting_zk_shared::eth_consensus_layer::Hash256;
@@ -133,7 +134,7 @@ async fn run_with_span(
     target_slot: Option<ReferenceSlot>,
     prev_slot: Option<ReferenceSlot>,
     flags: &Flags,
-) -> anyhow::Result<TxHash> {
+) -> anyhow::Result<TransactionReceipt> {
     tracing::info!(
         "Submitting report for network {:?}, target: (ref={:?}, actual={:?}), previous: (ref={:?}, actual={:?})",
         runtime.network().as_str(),
@@ -150,7 +151,7 @@ async fn run_with_span(
 
     if flags.dry_run {
         tracing::info!("Dry run mode enabled, skipping proof generation and verification");
-        return Ok(TxHash::default());
+        return Err(anyhow::anyhow!("Dry-run: skipping"));
     }
 
     let execution_report = if flags.report_cycles {
@@ -215,20 +216,36 @@ async fn run_with_span(
         tracing::info!("Verified proof");
     }
 
+    let proof_bytes = proof.bytes();
+    let pub_values_bytes = proof.public_values.to_vec();
+
     tracing::info!("Sending report");
-    let tx_hash = runtime
+    let tx_receipt = runtime
         .lido_infra
         .report_contract
-        .submit_report_data(proof.bytes(), proof.public_values.to_vec())
+        .submit_report_data(proof_bytes, pub_values_bytes)
         .await
-        .inspect(|tx_hash| {
-            tracing::info!("Report accepted, transaction: {tx_hash}");
+        .inspect(|tx_receipt| {
+            tracing::info!(
+                "Report accepted, transaction (id={}, hash={:#?}) at block (id={} hash={:#?})",
+                tx_receipt
+                    .transaction_index
+                    .map(|v| v.to_string())
+                    .unwrap_or("[N/A]".to_string()),
+                tx_receipt.transaction_hash,
+                tx_receipt
+                    .block_number
+                    .map(|v| v.to_string())
+                    .unwrap_or("[N/A]".to_string()),
+                tx_receipt.block_hash,
+            );
             runtime
                 .metrics
                 .execution
                 .outcome
                 .with_label_values(&[prometheus_metrics::outcome::SUCCESS])
                 .inc();
+            runtime.metrics.execution.gas_cost.set(tx_receipt.gas_used);
         })
         .inspect_err(|e| {
             tracing::error!("Failed to submit report: {e:?}");
@@ -239,7 +256,7 @@ async fn run_with_span(
                 .with_label_values(&[prometheus_metrics::outcome::REJECTION])
                 .inc();
         })?;
-    Ok(tx_hash)
+    Ok(tx_receipt)
 }
 
 const GWEI_TO_WEI: u64 = 1_000_000_000u64;
@@ -299,7 +316,7 @@ pub async fn run(
     target_slot: Option<ReferenceSlot>,
     prev_slot: Option<ReferenceSlot>,
     flags: &Flags,
-) -> anyhow::Result<TxHash> {
+) -> anyhow::Result<TransactionReceipt> {
     let timer = runtime.metrics.execution.execution_time_seconds.start_timer();
     let resolved_slot_values = resolve_slot_values(runtime, target_slot, prev_slot)
         .await
@@ -313,7 +330,7 @@ pub async fn run(
         })?;
 
     let submit_span = tracing::info_span!(
-        "span:submit",
+        "submit",
         report_slot=?resolved_slot_values.report_slot,
         target_slot=?resolved_slot_values.target_slot,
         previous_slot=?resolved_slot_values.previous_slot

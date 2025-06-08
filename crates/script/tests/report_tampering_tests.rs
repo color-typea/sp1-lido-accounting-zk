@@ -2,6 +2,7 @@ mod test_utils;
 
 use std::sync::Arc;
 
+use alloy::rpc::types::TransactionReceipt;
 use alloy_sol_types::SolType;
 use sp1_lido_accounting_scripts::{
     beacon_state_reader::{BeaconStateReader, StateId},
@@ -38,7 +39,7 @@ enum ExecutorError {
 }
 
 type Result<T> = std::result::Result<T, ExecutorError>;
-type TestExecutorResult = Result<alloy_primitives::TxHash>;
+type TestExecutorResult = Result<TransactionReceipt>;
 
 struct TestExecutor<M: Fn(PublicValuesRust) -> PublicValuesRust> {
     env: IntegrationTestEnvironment,

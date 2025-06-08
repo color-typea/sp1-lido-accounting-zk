@@ -5,6 +5,7 @@ use alloy::network::EthereumWallet;
 use alloy::primitives::Address;
 use alloy::providers::fillers::RecommendedFillers;
 use alloy::providers::ProviderBuilder;
+use alloy::rpc::types::TransactionReceipt;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::sol;
 use alloy::transports::http::reqwest::Url;
@@ -14,6 +15,7 @@ use sp1_lido_accounting_zk_shared::eth_consensus_layer::Hash256;
 use sp1_lido_accounting_zk_shared::io::eth_io;
 use sp1_lido_accounting_zk_shared::io::eth_io::{BeaconChainSlot, ReferenceSlot};
 use sp1_lido_accounting_zk_shared::io::program_io::WithdrawalVaultData;
+use tracing::Instrument;
 
 use core::clone::Clone;
 use core::fmt;
@@ -196,26 +198,39 @@ where
         self.contract.address()
     }
 
-    pub async fn submit_report_data(
+    async fn submit_report_data_impl(
         &self,
         proof: Vec<u8>,
         public_values: Vec<u8>,
-    ) -> Result<alloy_primitives::TxHash, ContractError> {
+    ) -> Result<TransactionReceipt, ContractError> {
         let tx_builder = self.contract.submitReportData(proof.into(), public_values.into());
         tracing::info!("Submitting report transaction");
         let tx = tx_builder
             .send()
+            .instrument(tracing::info_span!("send_tx"))
             .await
             .inspect(|val| tracing::debug!("Submitted transaction {}", val.tx_hash()))
             .inspect_err(|err| tracing::error!("Failed to submit transaction {err:?}"))?;
 
         tracing::info!("Waiting for report transaction");
         let tx_result = tx
-            .watch()
+            .get_receipt()
+            .instrument(tracing::info_span!("get_receipt"))
             .await
-            .inspect(|val| tracing::info!("Transaction completed {val:#?}"))
+            .inspect(|val| tracing::info!("Transaction completed {:#?}", val.transaction_hash))
             .inspect_err(|err| tracing::error!("Transaction failed {err:?}"))?;
         Ok(tx_result)
+    }
+
+    pub async fn submit_report_data(
+        &self,
+        proof: Vec<u8>,
+        public_values: Vec<u8>,
+    ) -> Result<TransactionReceipt, ContractError> {
+        let tracing_span = tracing::info_span!("submit_report_data");
+        self.submit_report_data_impl(proof, public_values)
+            .instrument(tracing_span)
+            .await
     }
 
     pub async fn get_latest_validator_state_slot(&self) -> Result<BeaconChainSlot, ContractError> {

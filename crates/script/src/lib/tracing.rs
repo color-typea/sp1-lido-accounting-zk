@@ -65,7 +65,7 @@ pub fn setup_logger(config: LoggingConfig) {
 
         let fmt_layer = match config.format {
             LogFormat::Json => json_subscriber::layer()
-                .with_target(false)
+                .with_target(true)
                 .with_thread_names(config.with_thread_names)
                 .with_current_span(false)
                 .with_span_list(false)
@@ -74,7 +74,7 @@ pub fn setup_logger(config: LoggingConfig) {
                 .boxed(),
             LogFormat::Plain => tracing_subscriber::fmt::layer()
                 .compact()
-                .with_target(false)
+                .with_target(true)
                 .with_thread_names(config.with_thread_names)
                 .boxed(),
         };

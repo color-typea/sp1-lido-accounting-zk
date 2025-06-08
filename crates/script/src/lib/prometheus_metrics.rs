@@ -99,6 +99,7 @@ pub struct Services {
 pub struct Execution {
     pub execution_time_seconds: Histogram,
     pub sp1_cycle_count: UIntGauge,
+    pub gas_cost: UIntGauge,
     pub outcome: UIntCounterVec,
 }
 
@@ -408,6 +409,11 @@ impl Metrics {
                 Some(long_duration_buckets.clone()),
             ),
             sp1_cycle_count: gauge(namespace, "execution__sp1_cycle_count", "SP1 cycle count"),
+            gas_cost: gauge(
+                namespace,
+                "execution__gas_used",
+                "Gas used for on-chain proof verification",
+            ),
             outcome: counter_vec(
                 namespace,
                 "execution__execution_outcome",

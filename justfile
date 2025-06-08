@@ -33,15 +33,25 @@ service_report_def:
 service_report target_slot='null' previous_slot='null':
     curl -X POST -H "Content-Type: application/json" -d '{"previous_ref_slot": {{previous_slot}}, "target_ref_slot": {{target_slot}}}' $SERVICE_BIND_TO_ADDR/run-report
 
+service_read_report target_slot='null':
+    curl -X GET $SERVICE_BIND_TO_ADDR/get-report?{{if target_slot!='null' { "target_slot="+target_slot } else { "" } }}
+
 service_stats:
     curl -X GET $SERVICE_BIND_TO_ADDR/metrics
 
 # Deploy
-anvil_run:
-    anvil --fork-url $FORK_URL
+anvil_run block_time='0':
+    anvil --fork-url $FORK_URL {{ if block_time != '0' { "--block-time "+block_time} else { "" } }}
 
 write_manifesto target_slot: build
     ./target/release/deploy --target-slot {{target_slot}} --store "data/deploy/${EVM_CHAIN}-deploy.json" --dry-run
+
+anvil_mine number='1':
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    for i in $(seq 1 {{number}}); do
+        curl -X POST http://localhost:8545   -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"evm_mine","params":[],"id":0}'
+    done
 
 ### Contract interactions ###
 # These implicitly depends on run_anvil, but we don't want to start anvil each time - it should be running

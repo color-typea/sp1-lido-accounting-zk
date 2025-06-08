@@ -80,10 +80,12 @@ pub async fn run_submit_impl(
         &state.submit_flags,
     )
     .await
-    .map(|tx_hash| {
-        let tx_hash_str = hex::encode(tx_hash);
-        tracing::info!("Report transaction complete {}", tx_hash_str);
-        tx_hash_str
+    .map(|tx_receipt| {
+        tracing::info!(
+            "Report transaction complete {:#?}",
+            tx_receipt.transaction_hash
+        );
+        hex::encode(tx_receipt.transaction_hash)
     })
     .map_err(|e| {
         tracing::error!("Failed to submit report {}", e);
