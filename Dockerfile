@@ -14,7 +14,9 @@ FROM debian:stable-slim AS lido_sp1_oracle
 RUN apt-get update && apt install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/src/sp1-lido-zk/target/release/service /usr/local/bin/service
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/healthcheck.sh /usr/local/bin/healthcheck.sh
+RUN chmod +x /usr/local/bin/healthcheck.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["service"]
-HEALTHCHECK --interval=30s --timeout=20s --start-period=5s --retries=3 CMD curl -f http://localhost:8080/health || exit 1
+HEALTHCHECK --interval=30s --timeout=20s --start-period=5s --retries=3 CMD /usr/local/bin/healthcheck.sh
