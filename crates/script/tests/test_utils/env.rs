@@ -9,7 +9,6 @@ use sp1_lido_accounting_scripts::{
         self,
         prelude::{
             BeaconStateReaderEnum, EthInfrastructure, Flags, LidoInfrastructure, LidoSettings, Sp1Infrastructure,
-            Sp1Settings,
         },
     },
     sp1_client_wrapper::{SP1ClientWrapper, SP1ClientWrapperImpl},
@@ -92,8 +91,6 @@ impl IntegrationTestEnvironment {
             .parse()
             .expect("Failed to parse HASH_CONSENSUS_ADDRESS to Address");
 
-        let sp1_settings = Sp1Settings { verifier_address };
-
         // Sepolia values
         let withdrawal_vault_address = hex!("De7318Afa67eaD6d6bbC8224dfCe5ed6e4b86d76").into();
         let withdrawal_credentials = hex!("010000000000000000000000De7318Afa67eaD6d6bbC8224dfCe5ed6e4b86d76").into();
@@ -104,7 +101,7 @@ impl IntegrationTestEnvironment {
             vkey,
             &deploy_bs,
             &network,
-            sp1_settings.verifier_address,
+            verifier_address,
             withdrawal_vault_address,
             withdrawal_credentials,
         );
@@ -142,7 +139,6 @@ impl IntegrationTestEnvironment {
                 hash_consensus_contract,
             },
             lido_settings,
-            sp1_settings,
             metrics,
             Flags {
                 dry_run: false,

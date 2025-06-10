@@ -150,7 +150,6 @@ pub struct EnvVars {
     pub sp1_prover: EnvVarValue<String>,
     pub network_private_key: EnvVarValue<String>,
     pub network_rpc_url: EnvVarValue<Option<Url>>,
-    pub sp1_verifier_address: EnvVarValue<Address>,
     pub bs_reader_mode: EnvVarValue<String>,
     pub bs_file_store: EnvVarValue<String>,
     pub evm_chain: EnvVarValue<String>,
@@ -181,7 +180,6 @@ impl EnvVars {
             sp1_prover: crate::env::SP1_PROVER.required(),
             network_private_key: crate::env::NETWORK_PRIVATE_KEY.required(),
             network_rpc_url: crate::env::NETWORK_RPC_URL.optional(),
-            sp1_verifier_address: crate::env::SP1_VERIFIER_ADDRESS.required(),
             bs_reader_mode: crate::env::BS_READER_MODE.required(),
             bs_file_store: crate::env::BS_FILE_STORE.required(),
             evm_chain: crate::env::EVM_CHAIN.required(),
@@ -229,7 +227,6 @@ impl EnvVars {
             result.insert("sp1_prover", self.sp1_prover.value.clone());
             result.insert("network_private_key", "<sensitive>".to_string());
             result.insert("network_rpc_url", format!("{:?}", self.network_rpc_url.value));
-            result.insert("sp1_verifier_address", format!("{:?}", self.sp1_verifier_address.value));
             result.insert("bs_reader_mode", self.bs_reader_mode.value.clone());
             result.insert("bs_file_store", self.bs_file_store.value.clone());
             result.insert("private_key", "<sensitive>".to_string());
@@ -248,10 +245,6 @@ pub struct LidoSettings {
     pub contract_address: Address,
     pub withdrawal_vault_address: Address,
     pub hash_consensus_address: Address,
-}
-
-pub struct Sp1Settings {
-    pub verifier_address: Address,
 }
 
 pub struct EthInfrastructure {
@@ -275,7 +268,6 @@ pub struct ScriptRuntime {
     pub sp1_infra: Sp1Infrastructure,
     pub lido_infra: LidoInfrastructure,
     pub lido_settings: LidoSettings,
-    pub sp1_settings: Sp1Settings,
     pub metrics: Metrics,
     pub flags: Flags,
 }
@@ -291,7 +283,6 @@ impl ScriptRuntime {
         sp1_infra: Sp1Infrastructure,
         lido_infra: LidoInfrastructure,
         lido_settings: LidoSettings,
-        sp1_settings: Sp1Settings,
         metrics: Metrics,
         flags: Flags,
     ) -> Self {
@@ -300,7 +291,6 @@ impl ScriptRuntime {
             sp1_infra,
             lido_infra,
             lido_settings,
-            sp1_settings,
             metrics,
             flags,
         }
@@ -346,9 +336,6 @@ impl ScriptRuntime {
                 contract_address: env_vars.contract_address.value,
                 withdrawal_vault_address: env_vars.withdrawal_vault_address.value,
                 hash_consensus_address: env_vars.hash_consensus_address.value,
-            },
-            Sp1Settings {
-                verifier_address: env_vars.sp1_verifier_address.value,
             },
             metrics,
             Flags {

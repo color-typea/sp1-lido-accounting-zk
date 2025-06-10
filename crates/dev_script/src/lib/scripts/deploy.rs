@@ -18,11 +18,18 @@ use std::{
 };
 
 pub enum Source {
-    Network { slot: BeaconChainSlot },
-    File { slot: u64, path: PathBuf },
+    Network {
+        slot: BeaconChainSlot,
+        verifier: Address,
+    },
+    File {
+        slot: u64,
+        path: PathBuf,
+    },
 }
 
 async fn compute_from_network(
+    verifier_address: Address,
     runtime: &ScriptRuntime,
     target_slot: BeaconChainSlot,
 ) -> anyhow::Result<ContractDeployParametersRust> {
@@ -37,7 +44,7 @@ async fn compute_from_network(
         vkey,
         &target_bs,
         runtime.network(),
-        runtime.sp1_settings.verifier_address,
+        verifier_address,
         runtime.lido_settings.withdrawal_vault_address,
         runtime.lido_settings.withdrawal_credentials,
     ))
@@ -100,7 +107,7 @@ pub async fn run(
         panic!("Verification is not yet supported");
     }
     let deploy_params = match source {
-        Source::Network { slot } => compute_from_network(runtime, slot).await?,
+        Source::Network { slot, verifier } => compute_from_network(verifier, runtime, slot).await?,
         Source::File { slot, path } => read_from_file(slot, &path).await?,
     };
 

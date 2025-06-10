@@ -105,11 +105,6 @@ pub const NETWORK_RPC_URL: EnvVarSpec = EnvVarSpec {
     key: "NETWORK_RPC_URL",
     sensitive: true,
 };
-pub const SP1_VERIFIER_ADDRESS: EnvVarSpec = EnvVarSpec {
-    key: "SP1_VERIFIER_ADDRESS",
-    sensitive: false,
-};
-
 pub const BS_READER_MODE: EnvVarSpec = EnvVarSpec {
     key: "BS_READER_MODE",
     sensitive: false,
