@@ -3,8 +3,14 @@ pragma solidity 0.8.27;
 
 import {SecondOpinionOracle} from "./ISecondOpinionOracle.sol";
 import {ISP1Verifier} from "@sp1-contracts/ISP1Verifier.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {PausableUntil} from "./PausableUntil.sol";
 
-contract Sp1LidoAccountingReportContract is SecondOpinionOracle {
+contract Sp1LidoAccountingReportContract is
+    SecondOpinionOracle,
+    Ownable,
+    PausableUntil
+{
     /// @notice The address of the beacon roots precompile.
     /// @dev https://eips.ethereum.org/EIPS/eip-4788
     address public constant BEACON_ROOTS = 0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02;
@@ -68,14 +74,24 @@ contract Sp1LidoAccountingReportContract is SecondOpinionOracle {
     event LidoValidatorStateHashRecorded(uint256 slot, bytes32 merkle_root);
 
     /// @dev Timestamp out of range for the the beacon roots precompile.
-    error TimestampOutOfRange(uint256 target_slot, uint256 target_timestamp, uint256 earliest_available_timestamp);
+    error TimestampOutOfRange(
+        uint256 target_slot,
+        uint256 target_timestamp,
+        uint256 earliest_available_timestamp
+    );
     /// @dev No block root is found using the beacon roots precompile.
     error NoBlockRootFound(uint256 target_slot);
 
     /// @dev Verification failed
     error VerificationError(string error_message);
 
-    error IllegalReferenceSlotError(uint256 bc_slot, uint256 bc_slot_timestamp, uint256 reference_slot, uint256 reference_slot_timestamp, string error_message);
+    error IllegalReferenceSlotError(
+        uint256 bc_slot,
+        uint256 bc_slot_timestamp,
+        uint256 reference_slot,
+        uint256 reference_slot_timestamp,
+        string error_message
+    );
 
     constructor(
         address _verifier,
@@ -83,14 +99,18 @@ contract Sp1LidoAccountingReportContract is SecondOpinionOracle {
         bytes32 _lido_withdrawal_credentials,
         address _withdrawal_vault_address,
         uint256 _genesis_timestamp,
-        LidoValidatorState memory _initial_state
-    ) {
+        LidoValidatorState memory _initial_state,
+        address _owner
+    ) Ownable(_owner) {
         VERIFIER = _verifier;
         VKEY = _vkey;
         WITHDRAWAL_CREDENTIALS = _lido_withdrawal_credentials;
         WITHDRAWAL_VAULT_ADDRESS = _withdrawal_vault_address;
         GENESIS_BLOCK_TIMESTAMP = _genesis_timestamp;
-        _recordLidoValidatorStateHash(_initial_state.slot, _initial_state.merkle_root);
+        _recordLidoValidatorStateHash(
+            _initial_state.slot,
+            _initial_state.merkle_root
+        );
     }
 
     function getReport(uint256 refSlot)
@@ -143,8 +163,14 @@ contract Sp1LidoAccountingReportContract is SecondOpinionOracle {
     ///         This function is INTENTIONALLY public and have no access modifiers - ANYONE
     ///         should be allowed to call it, and bring the report+proof to the contract - it is the responsibility
     ///         of this contract and SP1 verifier to reject invalid reports.
-    function submitReportData(bytes calldata proof, bytes calldata publicValues) public {
-        PublicValues memory public_values = abi.decode(publicValues, (PublicValues));
+    function submitReportData(
+        bytes calldata proof,
+        bytes calldata publicValues
+    ) public whenResumed {
+        PublicValues memory public_values = abi.decode(
+            publicValues,
+            (PublicValues)
+        );
         Report memory report = public_values.report;
         ReportMetadata memory metadata = public_values.metadata;
         _verify_reference_and_bc_slot(report.reference_slot, metadata.bc_slot);
