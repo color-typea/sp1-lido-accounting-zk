@@ -6,10 +6,7 @@ import {ISP1Verifier} from "@sp1-contracts/ISP1Verifier.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {PausableUntil} from "./PausableUntil.sol";
 
-contract Sp1LidoAccountingReportContract is
-    SecondOpinionOracle,
-    Ownable,
-    PausableUntil
+contract Sp1LidoAccountingReportContract is SecondOpinionOracle, Ownable, PausableUntil
 {
     /// @notice The address of the beacon roots precompile.
     /// @dev https://eips.ethereum.org/EIPS/eip-4788
@@ -74,11 +71,7 @@ contract Sp1LidoAccountingReportContract is
     event LidoValidatorStateHashRecorded(uint256 slot, bytes32 merkle_root);
 
     /// @dev Timestamp out of range for the the beacon roots precompile.
-    error TimestampOutOfRange(
-        uint256 target_slot,
-        uint256 target_timestamp,
-        uint256 earliest_available_timestamp
-    );
+    error TimestampOutOfRange(uint256 target_slot, uint256 target_timestamp, uint256 earliest_available_timestamp);
     /// @dev No block root is found using the beacon roots precompile.
     error NoBlockRootFound(uint256 target_slot);
 
