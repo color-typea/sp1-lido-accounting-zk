@@ -174,6 +174,31 @@ contract Sp1LidoAccountingReportContract is SecondOpinionOracle, Ownable, Pausab
         _recordLidoValidatorStateHash(metadata.new_state.slot, metadata.new_state.merkle_root);
     }
 
+    /// @notice Pause submit report data
+    /// @param _duration pause duration in seconds (use `PAUSE_INFINITELY` for unlimited)
+    /// @dev Reverts if contract is already paused
+    /// @dev Reverts reason if sender is not the owner
+    /// @dev Reverts if zero duration is passed
+    function pauseFor(uint256 _duration) external onlyOwner {
+        _pauseFor(_duration);
+    }
+
+    /// @notice Pause submit report data
+    /// @param _pauseUntilInclusive the last second to pause until inclusive
+    /// @dev Reverts if the timestamp is in the past
+    /// @dev Reverts if sender is not the owner
+    /// @dev Reverts if contract is already paused
+    function pauseUntil(uint256 _pauseUntilInclusive) external onlyOwner {
+        _pauseUntil(_pauseUntilInclusive);
+    }
+
+    /// @notice Resume submit report data
+    /// @dev Reverts if sender is not the owner
+    /// @dev Reverts if contract is not paused
+    function resume() external onlyOwner {
+        _resume();
+    }
+
     /// @notice Verifies that reference slot and beacon state slot are correct:
     /// * If reference slot had a block, beacon state slot must be equal to reference slot
     /// * If reference slot did not have a block, beacon state slot must be the first preceding slot that had a block
