@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity 0.8.27;
 
-
 /// Support for GateSeal contract https://docs.lido.fi/contracts/gate-seal
 contract PausableUntil {
     /// Special value for the infinite pause
@@ -79,8 +78,9 @@ contract PausableUntil {
 
     function _pauseUntil(uint256 _pauseUntilInclusive) internal {
         _checkResumed();
-        if (_pauseUntilInclusive < block.timestamp)
+        if (_pauseUntilInclusive < block.timestamp) {
             revert PauseUntilMustBeInFuture();
+        }
 
         uint256 resumeSince;
         if (_pauseUntilInclusive != PAUSE_INFINITELY) {
