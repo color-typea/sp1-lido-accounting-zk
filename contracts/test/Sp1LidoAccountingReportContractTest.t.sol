@@ -76,7 +76,7 @@ contract Sp1LidoAccountingReportContractTest is Test {
             fixture.metadata.withdrawal_vault_data.vault_address,
             GENESIS_BLOCK_TIMESTAMP,
             fixture.metadata.old_state,
-            address(0)
+            address(12345678901234567890)
         );
     }
 
