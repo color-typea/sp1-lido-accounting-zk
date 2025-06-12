@@ -45,7 +45,7 @@ contract Deploy is Script {
                     json.readUint(".initial_validator_state.slot"),
                     json.readBytes32(".initial_validator_state.merkle_root")
                 ),
-                json.readAddress(".lido_agent")
+                json.readAddress(".owner")
         );
 
         // sanity check
