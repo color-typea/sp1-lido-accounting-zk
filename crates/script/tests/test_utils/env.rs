@@ -40,6 +40,7 @@ use tree_hash::TreeHash;
 use typenum::Unsigned;
 
 use crate::test_utils::{self};
+use lazy_static::lazy_static;
 
 pub const RETRIES: usize = 3;
 
@@ -50,6 +51,20 @@ sol!(
     BeaconRootsMock,
     "../../contracts/out/BeaconRootsMock.sol/BeaconRootsMock.json",
 );
+
+lazy_static! {
+    pub static ref METRICS: Arc<Metrics> = Arc::new(Metrics::new("irrelevant"));
+}
+
+lazy_static! {
+    pub static ref SP1_CLIENT: Arc<SP1ClientWrapperImpl> = {
+        tracing::warn!("Initializing SP1 Client");
+        Arc::new(SP1ClientWrapperImpl::new(
+            ProverClient::from_env(),
+            METRICS.services.sp1_client.clone(),
+        ))
+    };
+}
 
 pub struct IntegrationTestEnvironment {
     // When going out of scope, AnvilInstance will terminate the anvil instance it corresponds to,
@@ -68,8 +83,6 @@ impl IntegrationTestEnvironment {
     }
 
     pub async fn new(network: WrappedNetwork, deploy_slot: BeaconChainSlot) -> anyhow::Result<Self> {
-        let metrics = Metrics::new("irrelevant");
-
         let file_store_location = PathBuf::from(env::var("BS_FILE_STORE")?);
         let rpc_endpoint = env::var("CONSENSUS_LAYER_RPC")?;
         let bs_endpoint = env::var("BEACON_STATE_RPC")?;
@@ -77,11 +90,11 @@ impl IntegrationTestEnvironment {
             &rpc_endpoint,
             &bs_endpoint,
             &file_store_location,
-            metrics.services.beacon_state_client.clone(),
+            METRICS.services.beacon_state_client.clone(),
         )?;
         let beacon_state_reader = BeaconStateReaderEnum::RPCCached(cached_reader);
         let file_writer =
-            FileBeaconStateWriter::new(&file_store_location, metrics.services.beacon_state_client.clone())?;
+            FileBeaconStateWriter::new(&file_store_location, METRICS.services.beacon_state_client.clone())?;
 
         let target_slot = Self::finalized_slot(&beacon_state_reader).await?;
         let finalized_bs = Self::read_latest_bs_at_or_before(&beacon_state_reader, target_slot, RETRIES).await?;
@@ -98,15 +111,12 @@ impl IntegrationTestEnvironment {
             .fork_block_number(fork_block_number)
             .try_spawn()?;
 
-        tracing::info!("Initializing SP1 Client");
-        let sp1_client = SP1ClientWrapperImpl::new(ProverClient::from_env(), metrics.services.sp1_client.clone());
-
         tracing::info!("Initializing Eth client");
         let provider = Arc::new(ProviderFactory::create_provider(
             anvil.keys()[0].clone(),
             anvil.endpoint().parse()?,
         ));
-        let eth_client = EthELClient::new(Arc::clone(&provider), metrics.services.eth_client.clone());
+        let eth_client = EthELClient::new(Arc::clone(&provider), METRICS.services.eth_client.clone());
 
         let test_files = test_utils::files::TestFiles::new_from_manifest_dir();
         let deploy_bs: BeaconState = test_files
@@ -128,7 +138,7 @@ impl IntegrationTestEnvironment {
         let withdrawal_vault_address = hex!("De7318Afa67eaD6d6bbC8224dfCe5ed6e4b86d76").into();
         let withdrawal_credentials = hex!("010000000000000000000000De7318Afa67eaD6d6bbC8224dfCe5ed6e4b86d76").into();
 
-        let vkey = sp1_client.vk_bytes()?;
+        let vkey = SP1_CLIENT.vk_bytes()?;
 
         let deploy_params = prepare_deploy_params(
             vkey,
@@ -148,10 +158,10 @@ impl IntegrationTestEnvironment {
         let hash_consensus_contract = HashConsensusContractWrapper::new(
             Arc::clone(&provider),
             hash_consensus_address,
-            metrics.services.hash_consensus.clone(),
+            METRICS.services.hash_consensus.clone(),
         );
 
-        tracing::warn!("Replacing BEACON_STATE_ROOTS contract bytecode");
+        tracing::info!("Replacing BEACON_STATE_ROOTS contract bytecode");
         provider
             .raw_request(
                 "anvil_setCode".into(),
@@ -176,13 +186,15 @@ impl IntegrationTestEnvironment {
                 eth_client,
                 beacon_state_reader,
             },
-            Sp1Infrastructure { sp1_client },
+            Sp1Infrastructure {
+                sp1_client: Arc::clone(&SP1_CLIENT),
+            },
             LidoInfrastructure {
                 report_contract,
                 hash_consensus_contract,
             },
             lido_settings,
-            metrics,
+            Arc::clone(&METRICS),
             Flags {
                 dry_run: false,
                 report_cycles: false,
