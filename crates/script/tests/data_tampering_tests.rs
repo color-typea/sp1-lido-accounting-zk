@@ -8,6 +8,7 @@ use sp1_lido_accounting_scripts::{
     eth_client::{self, Sp1LidoAccountingReportContract::Sp1LidoAccountingReportContractErrors},
     scripts::{prelude::BeaconStateReaderEnum, shared as shared_logic},
     sp1_client_wrapper::{self, SP1ClientWrapper},
+    tracing as tracing_config,
 };
 
 use sp1_lido_accounting_zk_shared::{
@@ -150,7 +151,7 @@ impl<'a> TestExecutor<'a> {
     }
 
     async fn run_test(&self, target_slot: BeaconChainSlot) -> core::result::Result<(), TestError> {
-        sp1_sdk::utils::setup_logger();
+        tracing_config::setup_logger(tracing_config::LoggingConfig::default());
         let lido_withdrawal_credentials: Hash256 = self.env.script_runtime.lido_settings.withdrawal_credentials;
 
         let reference_slot = mark_as_refslot(target_slot);
