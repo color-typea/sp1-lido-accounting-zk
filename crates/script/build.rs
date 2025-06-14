@@ -24,9 +24,21 @@ fn build_contract_abi(rel_path: &str) {
     }
 }
 
+fn build_program_wrapper(rel_path: &str) {
+    let abs_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel_path);
+    println!("cargo::rerun-if-changed={}", abs_path.canonicalize().unwrap().display());
+    // build_program(rel_path);
+    let target_name = "sp1-lido-accounting-zk-program";
+    let elf_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/elf-compilation/riscv32im-succinct-zkvm-elf/release/")
+        .join(target_name);
+    println!("cargo:rustc-env=SP1_ELF_{}={}", target_name, elf_path.to_string_lossy());
+}
+
 fn main() {
     print!("Running custom build commands");
     build_contract_abi("../../contracts");
-    build_program("../program");
+    build_contract_abi("../../test_contracts");
+    build_program_wrapper("../program");
     println!("Custom build successful");
 }

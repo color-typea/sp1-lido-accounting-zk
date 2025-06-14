@@ -49,7 +49,7 @@ sol!(
     #[sol(rpc)]
     #[derive(Debug)]
     BeaconRootsMock,
-    "../../contracts/out/BeaconRootsMock.sol/BeaconRootsMock.json",
+    "../../test_contracts/out/BeaconRootsMock.sol/BeaconRootsMock.json",
 );
 
 lazy_static! {

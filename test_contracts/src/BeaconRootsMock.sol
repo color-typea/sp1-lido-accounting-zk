@@ -3,6 +3,7 @@
 pragma solidity 0.8.27;
 
 
+// NOT PART OF THE AUDIT SCOPE, ONLY USED FOR INTEGRATION TESTS
 contract BeaconRootsMock {
     mapping(uint256 timestamp => bytes32 beacon_block_hash) public beacon_block_hashes;
 
