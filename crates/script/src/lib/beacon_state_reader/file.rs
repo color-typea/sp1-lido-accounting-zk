@@ -169,7 +169,12 @@ impl FileBeaconStateWriter {
     fn write_beacon_block_header_impl(&self, bh: &BeaconBlockHeader) -> anyhow::Result<()> {
         self.ensure_folder_exists()?;
         let file_path = self.file_store.get_beacon_block_header_path(&bh.slot.to_string());
-        tracing::info!(slot = bh.slot, "Writing BeaconState {} to {:?}", bh.slot, file_path);
+        tracing::info!(
+            slot = bh.slot,
+            "Writing BeaconBlockHeader {} to {:?}",
+            bh.slot,
+            file_path
+        );
 
         let mut serialized: Vec<u8> = Vec::new();
 

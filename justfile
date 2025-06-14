@@ -76,9 +76,6 @@ read_report target_slot:
 store_report target_slot previous_slot: build
     ./target/release/store_report --target-ref-slot {{target_slot}} --previous-ref-slot {{previous_slot}}
 
-update_fixtures target_slot previous_slot='0': build
-    ./target/release/write_test_fixture --target-ref-slot {{target_slot}} {{ if previous_slot != "0" { "--previous-ref-slot "+previous_slot } else { "" } }}
-
 download_state target_slot format="ssz":
     curl -H {{ if format == "ssz" { "'Accept:application/octet-stream'" } else { "'Accept:application/json'" } }} ${CONSENSUS_LAYER_RPC}/eth/v2/debug/beacon/states/{{target_slot}} > temp/beacon_states/$EVM_CHAIN/bs_{{target_slot}}.{{ if format == "ssz" { "ssz" } else { "json" } }}
 
@@ -96,6 +93,9 @@ read_validators target_slot:
     curl $CONSENSUS_LAYER_RPC/eth/v1/beacon/states/{{target_slot}}/validator_balances > temp/vals_bals/$EVM_CHAIN/balances_{{target_slot}}.json
 
 ### Testing ###
+test_update_fixtures target_slot previous_slot='0': build
+    ./target/release/write_test_fixture --target-ref-slot {{target_slot}} {{ if previous_slot != "0" { "--previous-ref-slot "+previous_slot } else { "" } }}
+    
 [working-directory: 'contracts']
 test_contracts:
     forge test
@@ -108,17 +108,17 @@ test_shared:
 test_program:
     cargo test
 
+# building scripts starts multiple builds in parallel and often OOMs
+# -j 5 limits the concurrency for building (but not running) and avoids that
+# --test-threads 5 limits concurrency for running tests (sometimes it gets excited and runs too
+# many in parallel, consuming all the memory and grinding to a halt)
 [working-directory: 'crates/script']
 test_script:
-    # building scripts starts multiple builds in parallel and often OOMs
-    # -j 5 limits the concurrency for building (but not running) and avoids that
-    # --test-threads 5 limits concurrecny for running tests (sometimes it gets excited and runs too
-    # many in parallel, consuming all the memory and grinding to a halt)
     RUST_LOG=info cargo test -j 5 -- --test-threads=5 --nocapture
 
 [working-directory: 'crates/script']
 integration_test:
-    cargo test -j 5 --include-ignored
+    cargo test -j 5 -- --test-threads 5 --include-ignored
 
 test: test_contracts test_shared test_script
 
