@@ -1,8 +1,9 @@
+#![allow(dead_code)]
 use std::sync::Arc;
 use std::{env, path::PathBuf};
 
 use eyre::{eyre, Result, WrapErr};
-use sp1_lido_accounting_scripts::beacon_state_reader::file::{FileBasedBeaconStateReader, FileBeaconStateWriter};
+use sp1_lido_accounting_scripts::beacon_state_reader::file::FileBasedBeaconStateReader;
 use sp1_lido_accounting_scripts::beacon_state_reader::{BeaconStateReader, StateId};
 use sp1_lido_accounting_scripts::consts::NetworkInfo;
 use sp1_lido_accounting_scripts::eth_client::ContractDeployParametersRust;

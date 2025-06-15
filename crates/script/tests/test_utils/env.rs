@@ -1,10 +1,11 @@
+#![allow(dead_code)]
 use alloy::{
     eips::eip4788::BEACON_ROOTS_ADDRESS,
     node_bindings::{Anvil, AnvilInstance},
     providers::Provider,
     sol,
 };
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use sp1_lido_accounting_scripts::{
     beacon_state_reader::{
         file::FileBeaconStateWriter, reqwest::CachedReqwestBeaconStateReader, BeaconStateReader, StateId,
@@ -35,7 +36,12 @@ use sp1_lido_accounting_zk_shared::{
     },
 };
 use sp1_sdk::ProverClient;
-use std::{env, path::PathBuf, sync::Arc};
+use std::{
+    env,
+    io::{BufRead, BufReader},
+    path::PathBuf,
+    sync::Arc,
+};
 use tree_hash::TreeHash;
 use typenum::Unsigned;
 
@@ -43,6 +49,7 @@ use crate::test_utils::{self};
 use lazy_static::lazy_static;
 
 pub const RETRIES: usize = 3;
+const FORWARD_ANVIL_LOGS: bool = true;
 
 sol!(
     #[allow(missing_docs)]
@@ -74,7 +81,7 @@ pub struct IntegrationTestEnvironment {
     pub script_runtime: scripts::prelude::ScriptRuntime,
     pub test_files: test_utils::files::TestFiles,
     file_writer: FileBeaconStateWriter,
-    beacon_roots_mock: BeaconRootsMock::BeaconRootsMockInstance<Arc<DefaultProvider>>,
+    beacon_roots_mock: Option<BeaconRootsMock::BeaconRootsMockInstance<Arc<DefaultProvider>>>,
 }
 
 impl IntegrationTestEnvironment {
@@ -82,34 +89,84 @@ impl IntegrationTestEnvironment {
         Self::new(test_utils::NETWORK.clone(), test_utils::DEPLOY_SLOT).await
     }
 
-    pub async fn new(network: WrappedNetwork, deploy_slot: BeaconChainSlot) -> anyhow::Result<Self> {
+    fn parse_envs() -> anyhow::Result<(PathBuf, String, String, String, Address, Address)> {
         let file_store_location = PathBuf::from(env::var("BS_FILE_STORE")?);
         let rpc_endpoint = env::var("CONSENSUS_LAYER_RPC")?;
         let bs_endpoint = env::var("BEACON_STATE_RPC")?;
+        let fork_url = env::var("INTEGRATION_TEST_FORK_URL")?;
+        let verifier_address: Address = env::var("SP1_VERIFIER_ADDRESS")?.parse()?;
+        let hash_consensus_address: Address = env::var("HASH_CONSENSUS_ADDRESS")?.parse()?;
+
+        Ok((
+            file_store_location,
+            rpc_endpoint,
+            bs_endpoint,
+            fork_url,
+            verifier_address,
+            hash_consensus_address,
+        ))
+    }
+
+    async fn start_anvil(
+        fork_url: String,
+        fork_block_number: u64,
+        with_log_capture: bool,
+    ) -> anyhow::Result<AnvilInstance> {
+        tracing::info!(
+            "Starting anvil: fork_block_number={}, fork_url={}",
+            fork_block_number,
+            fork_url
+        );
+        let anvil_builder = Anvil::new().fork(fork_url).fork_block_number(fork_block_number);
+
+        let anvil = if with_log_capture {
+            let mut anvil = anvil_builder.keep_stdout().try_spawn()?;
+            let anvil_child_process = anvil.child_mut();
+
+            if let Some(stdout) = anvil_child_process.stdout.take() {
+                let reader_stdout = BufReader::new(stdout);
+                std::thread::spawn(move || {
+                    for line in reader_stdout.lines().map_while(Result::ok) {
+                        println!("[anvil] {line}");
+                    }
+                });
+            }
+
+            if let Some(stderr) = anvil_child_process.stderr.take() {
+                let reader_stderr = BufReader::new(stderr);
+                std::thread::spawn(move || {
+                    for line in reader_stderr.lines().map_while(Result::ok) {
+                        println!("[anvil] {line}");
+                    }
+                });
+            }
+            anvil
+        } else {
+            anvil_builder.try_spawn()?
+        };
+        Ok(anvil)
+    }
+
+    pub async fn new(network: WrappedNetwork, deploy_slot: BeaconChainSlot) -> anyhow::Result<Self> {
+        let (file_store_location, rpc_endpoint, bs_endpoint, fork_url, verifier_address, hash_consensus_address) =
+            Self::parse_envs()?;
         let cached_reader = CachedReqwestBeaconStateReader::new(
             &rpc_endpoint,
             &bs_endpoint,
             &file_store_location,
             METRICS.services.beacon_state_client.clone(),
         )?;
-        let beacon_state_reader = BeaconStateReaderEnum::RPCCached(cached_reader);
+        let beacon_state_reader = Arc::new(BeaconStateReaderEnum::RPCCached(cached_reader));
         let file_writer =
             FileBeaconStateWriter::new(&file_store_location, METRICS.services.beacon_state_client.clone())?;
 
-        let target_slot = Self::finalized_slot(&beacon_state_reader).await?;
-        let finalized_bs = Self::read_latest_bs_at_or_before(&beacon_state_reader, target_slot, RETRIES).await?;
-        let fork_url =
-            env::var("INTEGRATION_TEST_FORK_URL").expect("INTEGRATION_TEST_FORK_URL env var must be specified");
+        let target_slot = Self::finalized_slot(Arc::clone(&beacon_state_reader)).await?;
+        let finalized_bs =
+            Self::read_latest_bs_at_or_before(Arc::clone(&beacon_state_reader), target_slot, RETRIES).await?;
+
         let fork_block_number = finalized_bs.latest_execution_payload_header.block_number + 2;
-        tracing::info!(
-            "Starting anvil: fork_block_number={}, fork_url={}",
-            fork_block_number,
-            fork_url
-        );
-        let anvil = Anvil::new()
-            .fork(fork_url)
-            .fork_block_number(fork_block_number)
-            .try_spawn()?;
+
+        let anvil = Self::start_anvil(fork_url, fork_block_number, FORWARD_ANVIL_LOGS).await?;
 
         tracing::info!("Initializing Eth client");
         let provider = Arc::new(ProviderFactory::create_provider(
@@ -123,16 +180,6 @@ impl IntegrationTestEnvironment {
             .read_beacon_state(&StateId::Slot(deploy_slot))
             .await
             .map_err(test_utils::eyre_to_anyhow)?;
-
-        let verifier_address = env::var("SP1_VERIFIER_ADDRESS")
-            .expect("SP1_VERIFIER_ADDRESS not set")
-            .parse()
-            .expect("Failed to parse SP1_VERIFIER_ADDRESS to Address");
-
-        let hash_consensus_address = env::var("HASH_CONSENSUS_ADDRESS")
-            .expect("HASH_CONSENSUS_ADDRESS not set")
-            .parse()
-            .expect("Failed to parse HASH_CONSENSUS_ADDRESS to Address");
 
         // Sepolia values
         let withdrawal_vault_address = hex!("De7318Afa67eaD6d6bbC8224dfCe5ed6e4b86d76").into();
@@ -160,15 +207,6 @@ impl IntegrationTestEnvironment {
             hash_consensus_address,
             METRICS.services.hash_consensus.clone(),
         );
-
-        tracing::info!("Replacing BEACON_STATE_ROOTS contract bytecode");
-        provider
-            .raw_request(
-                "anvil_setCode".into(),
-                [BEACON_ROOTS_ADDRESS.to_string(), BeaconRootsMock::BYTECODE.to_string()],
-            )
-            .await?;
-        let beacon_roots_mock_instance = BeaconRootsMock::new(BEACON_ROOTS_ADDRESS, Arc::clone(&provider));
 
         let lido_settings = LidoSettings {
             contract_address: report_contract.address().to_owned(),
@@ -206,7 +244,7 @@ impl IntegrationTestEnvironment {
             script_runtime,
             test_files: test_utils::files::TestFiles::new_from_manifest_dir(),
             file_writer,
-            beacon_roots_mock: beacon_roots_mock_instance,
+            beacon_roots_mock: None,
         };
 
         Ok(instance)
@@ -216,7 +254,7 @@ impl IntegrationTestEnvironment {
         self.script_runtime.network().get_config()
     }
 
-    pub async fn finalized_slot(bs_reader: &impl BeaconStateReader) -> anyhow::Result<BeaconChainSlot> {
+    pub async fn finalized_slot(bs_reader: Arc<impl BeaconStateReader>) -> anyhow::Result<BeaconChainSlot> {
         let finalized_block_header = bs_reader.read_beacon_block_header(&StateId::Finalized).await?;
         Ok(finalized_block_header.bc_slot())
     }
@@ -225,14 +263,9 @@ impl IntegrationTestEnvironment {
         Self::finalized_slot(self.script_runtime.bs_reader()).await
     }
 
-    pub async fn get_beacon_state(&self, state_id: &StateId) -> anyhow::Result<BeaconState> {
-        let bs = self.script_runtime.bs_reader().read_beacon_state(state_id).await?;
-        Ok(bs)
-    }
-
     pub async fn get_balance_proof(&self, state_id: &StateId) -> anyhow::Result<WithdrawalVaultData> {
         let address = self.script_runtime.lido_settings.withdrawal_vault_address;
-        let bs: BeaconState = self.get_beacon_state(state_id).await?;
+        let bs: BeaconState = self.read_beacon_state(state_id).await?;
         let execution_layer_block_hash = bs.latest_execution_payload_header.block_hash;
         let withdrawal_vault_data = self
             .script_runtime
@@ -241,10 +274,6 @@ impl IntegrationTestEnvironment {
             .get_withdrawal_vault_data(address, execution_layer_block_hash)
             .await?;
         Ok(withdrawal_vault_data)
-    }
-
-    pub fn bs_reader(&self) -> &impl BeaconStateReader {
-        self.script_runtime.bs_reader()
     }
 
     pub async fn read_beacon_block_header(&self, state_id: &StateId) -> anyhow::Result<BeaconBlockHeader> {
@@ -263,36 +292,56 @@ impl IntegrationTestEnvironment {
         self.file_writer.write_beacon_state(beacon_state)?;
         self.file_writer.write_beacon_block_header(block_header)?;
 
-        let slot = beacon_state.slot;
+        self.record_hash(block_header).await?;
+        Ok(())
+    }
 
-        let timestamp = self.network_config().genesis_block_timestamp + (slot * eth_spec::SecondsPerSlot::to_u64());
-        let beacon_block_hash = block_header.tree_hash_root();
+    pub async fn record_hash(&self, block_header: &BeaconBlockHeader) -> anyhow::Result<()> {
+        if let Some(beacon_roots_mock) = &self.beacon_roots_mock {
+            let slot = block_header.slot;
+            let timestamp = self.network_config().genesis_block_timestamp + (slot * eth_spec::SecondsPerSlot::to_u64());
+            let beacon_block_hash = block_header.tree_hash_root();
+            tracing::debug!("Stubbing block hash for {slot}@{timestamp} = {beacon_block_hash:#?}");
 
-        tracing::debug!("Stubbing block hash for {slot}@{timestamp} = {beacon_block_hash:#?}");
-        let _set_root_tx = self
-            .beacon_roots_mock
-            .setRoot(U256::from(timestamp), block_header.tree_hash_root())
-            .send()
-            .await?
-            .get_receipt()
+            let _set_root_tx = beacon_roots_mock
+                .setRoot(U256::from(timestamp), block_header.tree_hash_root())
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+            tracing::info!(
+                "Stubbed state for slot {slot}, block_root: {:#?}, state_root: {:#?}",
+                beacon_block_hash,
+                block_header.state_root
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn mock_beacon_state_roots_contract(&mut self) -> anyhow::Result<()> {
+        tracing::info!("Replacing BEACON_STATE_ROOTS contract bytecode");
+        let provider = Arc::clone(&self.script_runtime.eth_infra.provider);
+        let _res: () = provider
+            .raw_request(
+                "anvil_setCode".into(),
+                [BEACON_ROOTS_ADDRESS.to_string(), BeaconRootsMock::BYTECODE.to_string()],
+            )
             .await?;
-        tracing::info!(
-            "Stubbed state for slot {slot}, block_hash: {:#?}, state_hash: {:#?}",
-            beacon_block_hash,
-            state_hash
-        );
+        let beacon_roots_mock_instance = BeaconRootsMock::new(BEACON_ROOTS_ADDRESS, provider);
+
+        self.beacon_roots_mock = Some(beacon_roots_mock_instance);
         Ok(())
     }
 
     pub async fn read_latest_bs_at_or_before(
-        bs_reader: &impl BeaconStateReader,
+        bs_reader: Arc<impl BeaconStateReader>,
         slot: BeaconChainSlot,
         retries: usize,
     ) -> anyhow::Result<BeaconState> {
         let step = eth_spec::SlotsPerEpoch::to_u64();
         let mut attempt = 0;
         let mut current_slot = slot;
-        let result = loop {
+        loop {
             tracing::debug!("Fetching beacon state: attempt {attempt}, target slot {current_slot}");
             let try_bs = bs_reader.read_beacon_state(&StateId::Slot(current_slot)).await;
 
@@ -304,7 +353,6 @@ impl IntegrationTestEnvironment {
                 attempt += 1;
                 current_slot = BeaconChainSlot(current_slot.0 - step);
             }
-        };
-        result
+        }
     }
 }

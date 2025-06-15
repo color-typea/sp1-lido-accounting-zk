@@ -44,18 +44,16 @@ mod test_consts {
     pub const BLOCK_HASH_6811538: [u8; 32] = hex!("d7e211537258f4c3c7b79724808ae5d0ad0c25ab4b082685a70844925554aad2");
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 enum TestError {
+    #[error("Proof rejected for a known reason {0:?}")]
     ContractRejected(Sp1LidoAccountingReportContractErrors),
+    #[error("Proof rejected for other reason {0:?}")]
     OtherRejection(eth_client::ContractError),
-    ProofFailed(sp1_client_wrapper::Error),
-    Other(anyhow::Error),
-}
-
-impl From<anyhow::Error> for TestError {
-    fn from(value: anyhow::Error) -> Self {
-        TestError::Other(value)
-    }
+    #[error("Failed obtaining the proof {0:?}")]
+    ProofFailed(#[from] sp1_client_wrapper::Error),
+    #[error("Other {0:?}")]
+    Other(#[from] anyhow::Error),
 }
 
 impl From<eth_client::ContractError> for TestError {
@@ -92,8 +90,8 @@ impl TestExecutor {
         let previous_slot = self.get_old_slot().await?;
 
         let target_bh = self.env.read_beacon_block_header(&StateId::Slot(target_slot)).await?;
-        let target_bs = self.get_beacon_state(target_slot).await?;
-        let old_bs = self.get_beacon_state(previous_slot).await?;
+        let target_bs = self.env.read_beacon_state(&StateId::Slot(target_slot)).await?;
+        let old_bs = self.env.read_beacon_state(&StateId::Slot(previous_slot)).await?;
 
         let withdrawal_vault_data = self.env.get_balance_proof(&StateId::Slot(target_slot)).await?;
 
@@ -121,16 +119,6 @@ impl TestExecutor {
         Ok(res)
     }
 
-    pub async fn get_beacon_state(&self, slot: BeaconChainSlot) -> anyhow::Result<BeaconState> {
-        let res = self.env.read_beacon_state(&StateId::Slot(slot)).await?;
-        Ok(res)
-    }
-
-    pub async fn get_beacon_block_header(&self, slot: BeaconChainSlot) -> anyhow::Result<BeaconBlockHeader> {
-        let res = self.env.read_beacon_block_header(&StateId::Slot(slot)).await?;
-        Ok(res)
-    }
-
     pub async fn assert_fails_in_prover(&self, program_input: ProgramInput) -> anyhow::Result<()> {
         let result = self.env.script_runtime.sp1_infra.sp1_client.execute(program_input);
         match result {
@@ -154,7 +142,7 @@ impl TestExecutor {
         let proof = try_proof.unwrap();
 
         tracing::info!("Sending report");
-        let result = self
+        let _result = self
             .env
             .script_runtime
             .lido_infra
@@ -162,17 +150,6 @@ impl TestExecutor {
             .submit_report_data(proof.bytes(), proof.public_values.to_vec())
             .await?;
         Ok(())
-    }
-
-    pub fn assert_failed_proof(&self, result: Result<(), TestError>) -> anyhow::Result<()> {
-        match result {
-            Err(TestError::ProofFailed(e)) => {
-                tracing::info!("Failed to create proof - as expected: {:?}", e);
-                Ok(())
-            }
-            Err(other_error) => Err(anyhow!("Other error {:#?}", other_error)),
-            Ok(_) => Err(anyhow!("Report accepted")),
-        }
     }
 
     pub fn assert_rejected(&self, result: Result<(), TestError>) -> anyhow::Result<()> {
@@ -274,8 +251,11 @@ mod multi_modifications {
 
         let mut program_input = executor.prepare_actual_input(target_slot).await?;
 
-        let bs = executor.get_beacon_state(target_slot).await?;
-        let old_bs = executor.get_beacon_state(executor.get_old_slot().await?).await?;
+        let bs = executor.env.read_beacon_state(&StateId::Slot(target_slot)).await?;
+        let old_bs = executor
+            .env
+            .read_beacon_state(&StateId::Slot(executor.get_old_slot().await?))
+            .await?;
 
         let other_credentials: Hash256 = test_consts::NON_LIDO_CREDENTIALS.into();
         update_program_input(&mut program_input, bs, old_bs, &other_credentials, |bs| bs);
@@ -291,8 +271,11 @@ mod multi_modifications {
 
         let mut program_input = executor.prepare_actual_input(target_slot).await?;
 
-        let bs = executor.get_beacon_state(target_slot).await?;
-        let old_bs = executor.get_beacon_state(executor.get_old_slot().await?).await?;
+        let bs = executor.env.read_beacon_state(&StateId::Slot(target_slot)).await?;
+        let old_bs = executor
+            .env
+            .read_beacon_state(&StateId::Slot(executor.get_old_slot().await?))
+            .await?;
 
         let lido_credentials: Hash256 = executor.env.script_runtime.lido_settings.withdrawal_credentials;
 
@@ -312,8 +295,11 @@ mod multi_modifications {
 
         let mut program_input = executor.prepare_actual_input(target_slot).await?;
 
-        let bs = executor.get_beacon_state(target_slot).await?;
-        let old_bs = executor.get_beacon_state(executor.get_old_slot().await?).await?;
+        let bs = executor.env.read_beacon_state(&StateId::Slot(target_slot)).await?;
+        let old_bs = executor
+            .env
+            .read_beacon_state(&StateId::Slot(executor.get_old_slot().await?))
+            .await?;
 
         let lido_credentials: Hash256 = executor.env.script_runtime.lido_settings.withdrawal_credentials;
 
@@ -632,10 +618,14 @@ mod vals_and_bals {
     mod all_added {
         use super::*;
 
-        async fn setup_all_added(executor: &TestExecutor, target_slot: &BeaconChainSlot) -> Result<()> {
+        async fn setup_all_added(target_slot: &BeaconChainSlot) -> Result<TestExecutor> {
+            let mut executor = TestExecutor::default().await?;
             const NEW_VALIDATOR_COUNT: usize = 5;
-            let old_bs = executor.get_beacon_state(DEPLOY_SLOT).await?;
-            let old_bh = executor.get_beacon_block_header(DEPLOY_SLOT).await?;
+            let old_bs = executor.env.read_beacon_state(&StateId::Slot(DEPLOY_SLOT)).await?;
+            let old_bh = executor
+                .env
+                .read_beacon_block_header(&StateId::Slot(DEPLOY_SLOT))
+                .await?;
 
             let new_validators = [0; NEW_VALIDATOR_COUNT].map(|_| {
                 validator::make(
@@ -649,15 +639,15 @@ mod vals_and_bals {
                 .add_validators(&new_validators, &[0; NEW_VALIDATOR_COUNT])
                 .set_slot(target_slot)
                 .build();
+            executor.env.mock_beacon_state_roots_contract().await?;
             executor.env.stub_state(&new_bs, &new_bh).await?;
-            Ok(())
+            Ok(executor)
         }
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_all_added_extra() -> Result<()> {
-            let executor = TestExecutor::default().await?;
             let target_slot = REPORT_COMPUTE_SLOT + 1;
-            setup_all_added(&executor, &target_slot).await?;
+            let executor = setup_all_added(&target_slot).await?;
 
             let mut program_input = executor.prepare_actual_input(target_slot).await?;
 
@@ -674,12 +664,11 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_all_added_existing_as_added() -> Result<()> {
-            let executor = TestExecutor::default().await?;
             let target_slot = REPORT_COMPUTE_SLOT + 1;
-            setup_all_added(&executor, &target_slot).await?;
+            let executor = setup_all_added(&target_slot).await?;
 
             let mut program_input = executor.prepare_actual_input(target_slot).await?;
-            let bs = executor.get_beacon_state(target_slot).await?;
+            let bs = executor.env.read_beacon_state(&StateId::Slot(target_slot)).await?;
             let target_validator_index = 67;
             let validator = bs.validators[target_validator_index].clone();
 
@@ -696,9 +685,8 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_all_added_duplicated() -> Result<()> {
-            let executor = TestExecutor::default().await?;
             let target_slot = REPORT_COMPUTE_SLOT + 1;
-            setup_all_added(&executor, &target_slot).await?;
+            let executor = setup_all_added(&target_slot).await?;
 
             let mut program_input = executor.prepare_actual_input(target_slot).await?;
 
@@ -709,9 +697,8 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_all_added_modified_creds() -> Result<()> {
-            let executor = TestExecutor::default().await?;
             let target_slot = REPORT_COMPUTE_SLOT + 1;
-            setup_all_added(&executor, &target_slot).await?;
+            let executor = setup_all_added(&target_slot).await?;
 
             let mut program_input = executor.prepare_actual_input(target_slot).await?;
             let lido_creds: Hash256 = executor.env.script_runtime.lido_settings.withdrawal_credentials;
@@ -733,9 +720,8 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_all_added_modified_index() -> Result<()> {
-            let executor = TestExecutor::default().await?;
             let target_slot = REPORT_COMPUTE_SLOT + 1;
-            setup_all_added(&executor, &target_slot).await?;
+            let executor = setup_all_added(&target_slot).await?;
 
             let mut program_input = executor.prepare_actual_input(target_slot).await?;
 
@@ -752,9 +738,8 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_all_added_modified_activaion_epoch_past() -> Result<()> {
-            let executor = TestExecutor::default().await?;
             let target_slot = REPORT_COMPUTE_SLOT + 1;
-            setup_all_added(&executor, &target_slot).await?;
+            let executor = setup_all_added(&target_slot).await?;
 
             let current_epoch = target_slot.epoch();
 
@@ -773,9 +758,8 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_all_added_modified_activaion_epoch_future() -> Result<()> {
-            let executor = TestExecutor::default().await?;
             let target_slot = REPORT_COMPUTE_SLOT + 1;
-            setup_all_added(&executor, &target_slot).await?;
+            let executor = setup_all_added(&target_slot).await?;
 
             let current_epoch = target_slot.epoch();
 
@@ -794,9 +778,8 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_all_added_removed() -> Result<()> {
-            let executor = TestExecutor::default().await?;
             let target_slot = REPORT_COMPUTE_SLOT + 1;
-            setup_all_added(&executor, &target_slot).await?;
+            let executor = setup_all_added(&target_slot).await?;
 
             let mut program_input = executor.prepare_actual_input(target_slot).await?;
 
@@ -807,9 +790,8 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_all_added_shuffled() -> Result<()> {
-            let executor = TestExecutor::default().await?;
             let target_slot = REPORT_COMPUTE_SLOT + 1;
-            setup_all_added(&executor, &target_slot).await?;
+            let executor = setup_all_added(&target_slot).await?;
 
             let mut program_input = executor.prepare_actual_input(target_slot).await?;
 
@@ -821,9 +803,8 @@ mod vals_and_bals {
         /** This is a "fixed point" test - particular shuffle order that reliably fail the previous test */
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_all_added_shuffled_failing_case_1() -> Result<()> {
-            let executor = TestExecutor::default().await?;
             let target_slot = REPORT_COMPUTE_SLOT + 1;
-            setup_all_added(&executor, &target_slot).await?;
+            let executor = setup_all_added(&target_slot).await?;
 
             let mut program_input = executor.prepare_actual_input(target_slot).await?;
             let old_added = program_input.validators_and_balances.validators_delta.all_added;
@@ -843,7 +824,7 @@ mod vals_and_bals {
             let target_slot = executor.env.get_finalized_slot().await?;
 
             let mut program_input = executor.prepare_actual_input(target_slot).await?;
-            let bs = executor.get_beacon_state(target_slot).await?;
+            let bs = executor.env.read_beacon_state(&StateId::Slot(target_slot)).await?;
             let target_validator_index = 50;
             let validator = bs.validators[target_validator_index].clone();
 
@@ -1292,7 +1273,7 @@ mod withdrawal_vault {
         let mut program_input = executor.prepare_actual_input(target_slot).await?;
 
         let old_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
-        let old_bs = executor.env.get_beacon_state(&StateId::Slot(old_slot)).await?;
+        let old_bs = executor.env.read_beacon_state(&StateId::Slot(old_slot)).await?;
         let withdrawal_vault_address: Address = executor.env.script_runtime.lido_settings.withdrawal_vault_address;
 
         program_input.withdrawal_vault_data = executor
@@ -1316,7 +1297,7 @@ mod withdrawal_vault {
 
         let mut program_input = executor.prepare_actual_input(target_slot).await?;
 
-        let bs = executor.get_beacon_state(target_slot).await?;
+        let bs = executor.env.read_beacon_state(&StateId::Slot(target_slot)).await?;
 
         let updated_vault_data = executor
             .env
@@ -1360,7 +1341,7 @@ mod exec_payload {
         let mut program_input = executor.prepare_actual_input(target_slot).await?;
 
         let old_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
-        let old_bs = executor.env.get_beacon_state(&StateId::Slot(old_slot)).await?;
+        let old_bs = executor.env.read_beacon_state(&StateId::Slot(old_slot)).await?;
 
         program_input.latest_execution_header_data.state_root = old_bs.latest_execution_payload_header.state_root;
         executor.assert_fails_in_prover(program_input).await
@@ -1374,7 +1355,7 @@ mod exec_payload {
         let mut program_input = executor.prepare_actual_input(target_slot).await?;
 
         let old_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
-        let old_bs = executor.env.get_beacon_state(&StateId::Slot(old_slot)).await?;
+        let old_bs = executor.env.read_beacon_state(&StateId::Slot(old_slot)).await?;
 
         program_input.latest_execution_header_data =
             ExecutionPayloadHeaderData::new(&old_bs.latest_execution_payload_header);

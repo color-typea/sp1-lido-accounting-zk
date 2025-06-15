@@ -1,8 +1,6 @@
 mod test_utils;
 
-use sp1_lido_accounting_scripts::{
-    beacon_state_reader::StateId, consts::NetworkInfo, scripts::shared::prepare_program_input, tracing,
-};
+use sp1_lido_accounting_scripts::{beacon_state_reader::StateId, scripts::shared::prepare_program_input, tracing};
 use test_utils::{
     env::IntegrationTestEnvironment, files::TestFiles, mark_as_refslot, DEPLOY_SLOT, REPORT_COMPUTE_SLOT,
 };

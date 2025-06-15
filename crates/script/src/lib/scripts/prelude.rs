@@ -251,7 +251,7 @@ pub struct EthInfrastructure {
     pub network: WrappedNetwork,
     pub provider: Arc<DefaultProvider>,
     pub eth_client: EthELClient,
-    pub beacon_state_reader: BeaconStateReaderEnum,
+    pub beacon_state_reader: Arc<BeaconStateReaderEnum>,
 }
 
 pub struct Sp1Infrastructure {
@@ -305,8 +305,10 @@ impl ScriptRuntime {
         let metrics = Arc::new(Metrics::new(&env_vars.prometheus_namespace.value));
 
         let network = env_vars.evm_chain.value.clone().parse::<WrappedNetwork>()?;
-        let beacon_state_reader =
-            BeaconStateReaderEnum::new_from_env(&network, Arc::clone(&metrics.services.beacon_state_client))?;
+        let beacon_state_reader = Arc::new(BeaconStateReaderEnum::new_from_env(
+            &network,
+            Arc::clone(&metrics.services.beacon_state_client),
+        )?);
 
         let sp1_client = Arc::new(SP1ClientWrapperImpl::new(
             ProverClient::from_env(),
@@ -347,12 +349,12 @@ impl ScriptRuntime {
         Ok(result)
     }
 
-    pub fn bs_reader(&self) -> &impl BeaconStateReader {
-        &self.eth_infra.beacon_state_reader
+    pub fn bs_reader(&self) -> Arc<impl BeaconStateReader> {
+        self.eth_infra.beacon_state_reader.clone()
     }
 
-    pub fn ref_slot_resolver(&self) -> &impl RefSlotResolver {
-        &self.eth_infra.beacon_state_reader
+    pub fn ref_slot_resolver(&self) -> Arc<impl RefSlotResolver> {
+        self.eth_infra.beacon_state_reader.clone()
     }
 
     pub fn network(&self) -> &impl NetworkInfo {

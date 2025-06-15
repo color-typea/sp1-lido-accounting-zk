@@ -56,20 +56,34 @@ anvil_mine number='1':
 ### Contract interactions ###
 # These implicitly depends on run_anvil, but we don't want to start anvil each time - it should be running
 [working-directory: 'contracts']
-deploy:
+contract_deploy:
     forge script --chain $EVM_CHAIN_ID script/Deploy.s.sol:Deploy --rpc-url $EXECUTION_LAYER_RPC --broadcast {{verify_contract_cmd}}
 
-read_last_report_slot:
+[working-directory: 'test_contracts']
+block_root_mock_deploy:
+    forge script --chain $EVM_CHAIN_ID script/Deploy.s.sol:Deploy --rpc-url $EXECUTION_LAYER_RPC --broadcast
+
+contract_read_last_report_slot:
     cast call $CONTRACT_ADDRESS "getLatestLidoValidatorStateSlot()(uint256)" --rpc-url $EXECUTION_LAYER_RPC
 
-read_last_report:
+contract_read_last_report:
     #!/usr/bin/env bash
     set -euxo pipefail
     target_slot=$(cast --json call $CONTRACT_ADDRESS "getLatestLidoValidatorStateSlot()(uint256)"  --rpc-url $EXECUTION_LAYER_RPC| jq ".[0] | tonumber")
     cast call $CONTRACT_ADDRESS "getReport(uint256)(bool,uint256,uint256,uint256,uint256)" $target_slot --rpc-url $EXECUTION_LAYER_RPC
 
-read_report target_slot:
+contract_read_report target_slot:
     cast call $CONTRACT_ADDRESS "getReport(uint256)(bool,uint256,uint256,uint256,uint256)" "{{target_slot}}" --rpc-url $EXECUTION_LAYER_RPC
+
+contract_get_block_hash target_slot:
+    cast call $CONTRACT_ADDRESS "getBeaconBlockHash(uint256 slot)" "{{target_slot}}" --rpc-url $EXECUTION_LAYER_RPC
+
+block_root_mock_set_block_hash timestamp hash:
+    cast send "0xE32c9e093bF1427728Cb91D9Be1a0a507275c9c3" "setRoot(uint256 timestamp, bytes32 root)" "{{timestamp}}" "{{hash}}" --rpc-url $EXECUTION_LAYER_RPC --private-key $PRIVATE_KEY
+
+block_root_mock_get_block_hash timestamp:
+    cast call "0xE32c9e093bF1427728Cb91D9Be1a0a507275c9c3" "beacon_block_hashes(uint256)(bytes32)" "{{timestamp}}" --rpc-url $EXECUTION_LAYER_RPC
+    cast call "0xE32c9e093bF1427728Cb91D9Be1a0a507275c9c3" $(cast abi-encode "f(uint256)" {{timestamp}}) --rpc-url $EXECUTION_LAYER_RPC
 ### Contract interactions ###
 
 ### Development ###
@@ -93,7 +107,7 @@ read_validators target_slot:
     curl $CONSENSUS_LAYER_RPC/eth/v1/beacon/states/{{target_slot}}/validator_balances > temp/vals_bals/$EVM_CHAIN/balances_{{target_slot}}.json
 
 ### Testing ###
-test_update_fixtures target_slot previous_slot='0': build
+test_update_fixtures target_slot='7700384' previous_slot='7643456': build
     ./target/release/write_test_fixture --target-ref-slot {{target_slot}} {{ if previous_slot != "0" { "--previous-ref-slot "+previous_slot } else { "" } }}
     
 [working-directory: 'contracts']
@@ -114,11 +128,11 @@ test_program:
 # many in parallel, consuming all the memory and grinding to a halt)
 [working-directory: 'crates/script']
 test_script:
-    RUST_LOG=info cargo test -j 5 -- --test-threads=5 --nocapture
+    SP1_SKIP_PROGRAM_BUILD=true RUST_LOG=info cargo test -j 5 -- --test-threads=5 --nocapture
 
 [working-directory: 'crates/script']
 integration_test:
-    cargo test -j 5 -- --test-threads 5 --include-ignored
+    SP1_SKIP_PROGRAM_BUILD=true cargo test -j 5 -- --test-threads 5 --include-ignored --nocapture
 
 test: test_contracts test_shared test_script
 

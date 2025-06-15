@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use anyhow::anyhow;
 use hex_literal::hex;
 use sp1_lido_accounting_scripts::consts::{Network, WrappedNetwork};
@@ -137,8 +138,8 @@ pub mod validator {
     pub fn make(pubkey: BlsPublicKey, withdrawal_credentials: WithdrawalCredentials, status: Status) -> Validator {
         let (activation_eligibility_epoch, activation_epoch, exit_epoch) = match status {
             Status::Pending(epoch) => (epoch, u64::MAX, u64::MAX),
-            Status::Active(deposited) => (deposited - 1, deposited, u64::MAX),
-            Status::Exited { activated, exited } => (activated - 1, activated, exited),
+            Status::Active(activated) => (activated - 2, activated - 1, u64::MAX),
+            Status::Exited { activated, exited } => (activated - 2, activated - 1, exited),
         };
 
         Validator {
@@ -231,12 +232,12 @@ pub mod vecs {
         input
     }
 
-    pub fn duplicate<Elem: Clone>(mut input: Vec<Elem>, index: usize) -> Vec<Elem> {
+    pub fn duplicate<Elem: Clone>(input: Vec<Elem>, index: usize) -> Vec<Elem> {
         let elem = input[index].clone();
         append(input, elem)
     }
 
-    pub fn duplicate_random<Elem: Clone>(mut input: Vec<Elem>) -> Vec<Elem> {
+    pub fn duplicate_random<Elem: Clone>(input: Vec<Elem>) -> Vec<Elem> {
         let duplicate_idx = rand::rng().random_range(0..input.len());
         duplicate(input, duplicate_idx)
     }
@@ -247,7 +248,7 @@ pub mod vecs {
         input
     }
 
-    pub fn modify_random<Elem: Clone>(mut input: Vec<Elem>, modifier: impl Fn(Elem) -> Elem) -> Vec<Elem> {
+    pub fn modify_random<Elem: Clone>(input: Vec<Elem>, modifier: impl Fn(Elem) -> Elem) -> Vec<Elem> {
         let modify_idx = rand::rng().random_range(0..input.len());
         modify(input, modify_idx, modifier)
     }
@@ -258,7 +259,7 @@ pub mod vecs {
         input
     }
 
-    pub fn remove_random<Elem>(mut input: Vec<Elem>) -> Vec<Elem> {
+    pub fn remove_random<Elem>(input: Vec<Elem>) -> Vec<Elem> {
         let remove_idx = rand::rng().random_range(0..input.len());
         remove(input, remove_idx)
     }
@@ -273,9 +274,9 @@ pub mod vecs {
         new
     }
 
-    pub fn ensured_shuffle_keep_first<N: Clone + PartialEq>(input: &Vec<N>) -> Vec<N> {
+    pub fn ensured_shuffle_keep_first<N: Clone + PartialEq>(input: &[N]) -> Vec<N> {
         assert!(input.len() > 2); // no point shuffling a single element
-        let mut new = input.clone();
+        let mut new = input.to_vec();
         new.splice(1.., ensured_shuffle(&new[1..]));
         new
     }
@@ -296,7 +297,7 @@ pub mod varlists {
     }
 
     pub fn duplicate<Elem: Clone, Size: typenum::Unsigned>(
-        mut input: VariableList<Elem, Size>,
+        input: VariableList<Elem, Size>,
         index: usize,
     ) -> VariableList<Elem, Size> {
         let elem = input[index].clone();
@@ -304,9 +305,9 @@ pub mod varlists {
     }
 
     pub fn duplicate_random<Elem: Clone, Size: typenum::Unsigned>(
-        mut input: VariableList<Elem, Size>,
+        input: VariableList<Elem, Size>,
     ) -> VariableList<Elem, Size> {
-        let duplicate_idx = rand::thread_rng().gen_range(0..input.len());
+        let duplicate_idx = rand::rng().random_range(0..input.len());
         duplicate(input, duplicate_idx)
     }
 
@@ -320,15 +321,15 @@ pub mod varlists {
     }
 
     pub fn modify_random<Elem: Clone, Size: typenum::Unsigned>(
-        mut input: VariableList<Elem, Size>,
+        input: VariableList<Elem, Size>,
         modifier: fn(Elem) -> Elem,
     ) -> VariableList<Elem, Size> {
-        let modify_idx = rand::thread_rng().gen_range(0..input.len());
+        let modify_idx = rand::rng().random_range(0..input.len());
         modify(input, modify_idx, modifier)
     }
 
     pub fn remove<Elem: Clone, Size: typenum::Unsigned>(
-        mut input: VariableList<Elem, Size>,
+        input: VariableList<Elem, Size>,
         index: usize,
     ) -> VariableList<Elem, Size> {
         let as_vec = input.to_vec();
@@ -336,9 +337,9 @@ pub mod varlists {
     }
 
     pub fn remove_random<Elem: Clone, Size: typenum::Unsigned>(
-        mut input: VariableList<Elem, Size>,
+        input: VariableList<Elem, Size>,
     ) -> VariableList<Elem, Size> {
-        let remove_idx = rand::thread_rng().gen_range(0..input.len());
+        let remove_idx = rand::rng().random_range(0..input.len());
         remove(input, remove_idx)
     }
 
@@ -352,7 +353,7 @@ pub mod varlists {
     pub fn ensured_shuffle_keep_first<Elem: Clone + PartialEq, Size: typenum::Unsigned>(
         input: VariableList<Elem, Size>,
     ) -> VariableList<Elem, Size> {
-        let mut as_vec = input.to_vec();
+        let as_vec = input.to_vec();
         vecs::ensured_shuffle_keep_first(&as_vec).into()
     }
 }
