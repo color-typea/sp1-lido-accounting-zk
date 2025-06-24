@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use alloy::{
-    eips::eip4788::BEACON_ROOTS_ADDRESS,
+    eips::eip4788::{BEACON_ROOTS_ADDRESS, BEACON_ROOTS_CODE},
     node_bindings::{Anvil, AnvilInstance},
     providers::Provider,
     sol,
@@ -28,7 +28,7 @@ use sp1_lido_accounting_scripts::{
 
 use hex_literal::hex;
 use sp1_lido_accounting_zk_shared::{
-    eth_consensus_layer::{BeaconBlockHeader, BeaconState},
+    eth_consensus_layer::{BeaconBlockHeader, BeaconState, Hash256},
     eth_spec,
     io::{
         eth_io::{BeaconChainSlot, HaveSlotWithBlock},
@@ -45,7 +45,7 @@ use std::{
 use tree_hash::TreeHash;
 use typenum::Unsigned;
 
-use crate::test_utils::{self};
+use crate::test_utils::{self, env::BeaconRootsMock::BeaconRootsMockInstance};
 use lazy_static::lazy_static;
 
 pub const RETRIES: usize = 3;
@@ -144,6 +144,8 @@ impl IntegrationTestEnvironment {
         } else {
             anvil_builder.try_spawn()?
         };
+        let port = anvil.port();
+        tracing::debug!("Launched anvil at port {}", port);
         Ok(anvil)
     }
 
@@ -296,24 +298,64 @@ impl IntegrationTestEnvironment {
         Ok(())
     }
 
+    async fn set_block_hash(
+        &self,
+        beacon_roots_mock: &BeaconRootsMockInstance<Arc<DefaultProvider>>,
+        timestamp: U256,
+        hash: Hash256,
+    ) -> anyhow::Result<Hash256> {
+        let set_root_tx = beacon_roots_mock
+            .setRoot(timestamp, hash)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+
+        tracing::debug!("Stubbed hash, {hash:#?} for timestamp {timestamp}");
+
+        let recorded = beacon_roots_mock.beacon_block_hashes(timestamp).call().await?;
+
+        Ok(recorded)
+    }
+
     pub async fn record_hash(&self, block_header: &BeaconBlockHeader) -> anyhow::Result<()> {
         if let Some(beacon_roots_mock) = &self.beacon_roots_mock {
             let slot = block_header.slot;
-            let timestamp = self.network_config().genesis_block_timestamp + (slot * eth_spec::SecondsPerSlot::to_u64());
-            let beacon_block_hash = block_header.tree_hash_root();
-            tracing::debug!("Stubbing block hash for {slot}@{timestamp} = {beacon_block_hash:#?}");
 
-            let _set_root_tx = beacon_roots_mock
-                .setRoot(U256::from(timestamp), block_header.tree_hash_root())
-                .send()
-                .await?
-                .get_receipt()
+            let timestamp_for_block_exists_check =
+                U256::from(self.network_config().genesis_block_timestamp + (slot * eth_spec::SecondsPerSlot::to_u64()));
+
+            // +1 is EXTREMELY important - see comment above _findBeaconBlockHash in the Sp1LidoAccountingReportContract
+            let timestamp_for_get_block_hash = U256::from(
+                self.network_config().genesis_block_timestamp + ((slot + 1) * eth_spec::SecondsPerSlot::to_u64()),
+            );
+
+            let beacon_block_hash = block_header.tree_hash_root();
+            tracing::debug!("Stubbing block hash for {slot}@{timestamp_for_get_block_hash} = {beacon_block_hash:#?}");
+
+            let hash_at_block_timestamp = beacon_roots_mock
+                .beacon_block_hashes(timestamp_for_block_exists_check)
+                .call()
                 .await?;
+
+            let block_exists = hash_at_block_timestamp != [0; 32];
+            if !block_exists {
+                let any_hash = beacon_block_hash; // but any other would do, except all-zeroes
+                self.set_block_hash(beacon_roots_mock, timestamp_for_block_exists_check, any_hash)
+                    .await?;
+            }
+
+            let recorded = self
+                .set_block_hash(beacon_roots_mock, timestamp_for_get_block_hash, beacon_block_hash)
+                .await?;
+
             tracing::info!(
                 "Stubbed state for slot {slot}, block_root: {:#?}, state_root: {:#?}",
                 beacon_block_hash,
-                block_header.state_root
+                block_header.state_root,
             );
+
+            tracing::info!("Recorded hash for slot {slot}, {recorded:#?}");
         }
         Ok(())
     }
@@ -321,12 +363,22 @@ impl IntegrationTestEnvironment {
     pub async fn mock_beacon_state_roots_contract(&mut self) -> anyhow::Result<()> {
         tracing::info!("Replacing BEACON_STATE_ROOTS contract bytecode");
         let provider = Arc::clone(&self.script_runtime.eth_infra.provider);
+        let old_bytecode = provider.get_code_at(BEACON_ROOTS_ADDRESS).latest().await?;
+        assert_eq!(old_bytecode, BEACON_ROOTS_CODE);
         let _res: () = provider
             .raw_request(
                 "anvil_setCode".into(),
-                [BEACON_ROOTS_ADDRESS.to_string(), BeaconRootsMock::BYTECODE.to_string()],
+                [
+                    BEACON_ROOTS_ADDRESS.to_string(),
+                    BeaconRootsMock::DEPLOYED_BYTECODE.to_string(),
+                ],
             )
             .await?;
+
+        let new_code = provider.get_code_at(BEACON_ROOTS_ADDRESS).latest().await?;
+        assert_eq!(new_code, BeaconRootsMock::DEPLOYED_BYTECODE);
+        tracing::debug!("New bytecode:\n{new_code:#}");
+        tracing::info!("Replaced BEACON_STATE_ROOTS contract bytecode");
         let beacon_roots_mock_instance = BeaconRootsMock::new(BEACON_ROOTS_ADDRESS, provider);
 
         self.beacon_roots_mock = Some(beacon_roots_mock_instance);
