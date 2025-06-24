@@ -78,12 +78,18 @@ contract_read_report target_slot:
 contract_get_block_hash target_slot:
     cast call $CONTRACT_ADDRESS "getBeaconBlockHash(uint256 slot)" "{{target_slot}}" --rpc-url $EXECUTION_LAYER_RPC
 
+block_root_mock_setup:
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    bytecode=$(cat test_contracts/out/BeaconRootsMock.sol/BeaconRootsMock.json | jq ".deployedBytecode.object")
+    curl $EXECUTION_LAYER_RPC  -H "Content-Type: application/json" -d '{ "jsonrpc": "2.0", "method": "anvil_setCode", "params": ["0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02", '${bytecode#0x}'], "id": 1 }'
+
 block_root_mock_set_block_hash timestamp hash:
-    cast send "0xE32c9e093bF1427728Cb91D9Be1a0a507275c9c3" "setRoot(uint256 timestamp, bytes32 root)" "{{timestamp}}" "{{hash}}" --rpc-url $EXECUTION_LAYER_RPC --private-key $PRIVATE_KEY
+    cast send "0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02" "setRoot(uint256 timestamp, bytes32 root)" "{{timestamp}}" "{{hash}}" --rpc-url $EXECUTION_LAYER_RPC --private-key $PRIVATE_KEY
 
 block_root_mock_get_block_hash timestamp:
-    cast call "0xE32c9e093bF1427728Cb91D9Be1a0a507275c9c3" "beacon_block_hashes(uint256)(bytes32)" "{{timestamp}}" --rpc-url $EXECUTION_LAYER_RPC
-    cast call "0xE32c9e093bF1427728Cb91D9Be1a0a507275c9c3" $(cast abi-encode "f(uint256)" {{timestamp}}) --rpc-url $EXECUTION_LAYER_RPC
+    cast call "0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02" "beacon_block_hashes(uint256)(bytes32)" "{{timestamp}}" --rpc-url $EXECUTION_LAYER_RPC
+    cast call "0x000F3df6D732807Ef1319fB7B8bB8522d0Beac02" $(cast abi-encode "f(uint256)" {{timestamp}}) --rpc-url $EXECUTION_LAYER_RPC
 ### Contract interactions ###
 
 ### Development ###
