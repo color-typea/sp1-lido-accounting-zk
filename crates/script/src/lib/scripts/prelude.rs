@@ -81,6 +81,7 @@ impl BeaconStateReaderEnum {
                     &rpc_endpoint,
                     &bs_endpoint,
                     &file_store,
+                    &[],
                     Arc::clone(&metric_reporter),
                 )?;
                 Ok(BeaconStateReaderEnum::RPCCached(cached_reader))

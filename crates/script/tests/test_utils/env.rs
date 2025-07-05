@@ -42,6 +42,7 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
+use tempfile::TempDir;
 use tree_hash::TreeHash;
 use typenum::Unsigned;
 
@@ -80,6 +81,7 @@ pub struct IntegrationTestEnvironment {
     pub anvil: AnvilInstance,
     pub script_runtime: scripts::prelude::ScriptRuntime,
     pub test_files: test_utils::files::TestFiles,
+    temp_folders: Vec<TempDir>,
     file_writer: FileBeaconStateWriter,
     beacon_roots_mock: Option<BeaconRootsMock::BeaconRootsMockInstance<Arc<DefaultProvider>>>,
 }
@@ -152,15 +154,18 @@ impl IntegrationTestEnvironment {
     pub async fn new(network: WrappedNetwork, deploy_slot: BeaconChainSlot) -> anyhow::Result<Self> {
         let (file_store_location, rpc_endpoint, bs_endpoint, fork_url, verifier_address, hash_consensus_address) =
             Self::parse_envs()?;
+        let temp_bs_folder = TempDir::new()?;
+        let temp_bs_folder_path = temp_bs_folder.path();
         let cached_reader = CachedReqwestBeaconStateReader::new(
             &rpc_endpoint,
             &bs_endpoint,
             &file_store_location,
+            &[temp_bs_folder_path],
             METRICS.services.beacon_state_client.clone(),
         )?;
         let beacon_state_reader = Arc::new(BeaconStateReaderEnum::RPCCached(cached_reader));
         let file_writer =
-            FileBeaconStateWriter::new(&file_store_location, METRICS.services.beacon_state_client.clone())?;
+            FileBeaconStateWriter::new(temp_bs_folder_path, METRICS.services.beacon_state_client.clone())?;
 
         let target_slot = Self::finalized_slot(Arc::clone(&beacon_state_reader)).await?;
         let finalized_bs =
@@ -251,6 +256,7 @@ impl IntegrationTestEnvironment {
             anvil, // this needs to be here so that test executor assumes ownership of running anvil instance - otherwise it terminates right away
             script_runtime,
             test_files: test_utils::files::TestFiles::new_from_manifest_dir(),
+            temp_folders: vec![temp_bs_folder],
             file_writer,
             beacon_roots_mock: None,
         };
