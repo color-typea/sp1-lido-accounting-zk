@@ -14,9 +14,8 @@ use sp1_lido_accounting_scripts::{
     tracing as tracing_config,
 };
 
-use sp1_lido_accounting_zk_shared::eth_consensus_layer::{BeaconBlockHeader, BeaconStateFields};
+use sp1_lido_accounting_zk_shared::eth_consensus_layer::BeaconStateFields;
 use sp1_lido_accounting_zk_shared::io::eth_io::{HaveEpoch, ReferenceSlot};
-use sp1_lido_accounting_zk_shared::io::program_io::ExecutionPayloadHeaderData;
 use sp1_lido_accounting_zk_shared::lido::{LidoValidatorState, ValidatorWithIndex};
 use sp1_lido_accounting_zk_shared::util::usize_to_u64;
 use sp1_lido_accounting_zk_shared::{
@@ -29,9 +28,20 @@ use tree_hash::TreeHash;
 use typenum::Unsigned;
 
 use test_utils::{
-    adjustments::Adjuster, env::IntegrationTestEnvironment, make_validator, mark_as_refslot, set_bs_field, validator,
-    varlists, vecs, DEPLOY_SLOT, REPORT_COMPUTE_SLOT,
+    adjustments::Adjuster, env::IntegrationTestEnvironment, mark_as_refslot, set_bs_field, validator, varlists, vecs,
+    DEPLOY_SLOT, REPORT_COMPUTE_SLOT,
 };
+
+fn equal_in_any_order<T: Eq + std::hash::Hash>(a: &[T], b: &[T]) -> bool {
+    let a: HashSet<_> = a.iter().collect();
+    let b: HashSet<_> = b.iter().collect();
+
+    a == b
+}
+
+fn is_sorted<T: PartialOrd>(val: &[T]) -> bool {
+    val.windows(2).all(|w| w[0] < w[1])
+}
 
 mod test_consts {
     use hex_literal::hex;
@@ -119,6 +129,12 @@ impl TestExecutor {
         Ok(res)
     }
 
+    pub async fn get_old_beacon_state(&self) -> anyhow::Result<BeaconState> {
+        let old_slot = self.get_old_slot().await?;
+        let old_bs = self.env.read_beacon_state(&StateId::Slot(old_slot)).await?;
+        Ok(old_bs)
+    }
+
     pub async fn assert_fails_in_prover(&self, program_input: ProgramInput) -> anyhow::Result<()> {
         let result = self.env.script_runtime.sp1_infra.sp1_client.execute(program_input);
         match result {
@@ -174,32 +190,13 @@ impl TestExecutor {
 /*
 Test scenarios:
 # Overall
-* Legit data for a different slot - contract rejects
-* "Partially old" scenarios (pass correct data for everything, except listed):
-** WithdrawalVaultData + ExecutionPayloadHeaderData - prover crash
-** Outdated old state + legit delta - contract rejects
+
+
 * Correct old state, different lido withdrawal credentials for delta, new = old + delta - prover crash
-
-
-# ProgramInput
-* Refslot > bc_slot - contract rejects
-* bc_slot empty - cannot reliably replicate (yet), covered by contract tests
-* bc_slot in future - contract rejects
-* beacon_block_hash - arbitrary - prover crash
-* any adjustment to beacon_block_header - prover crash
-* any adjustment to beacon_state - prover crash
-* validators_and_balances - see vals_and_bals module
-* old_lido_validator_state - see old_state module
-* new_lido_validator_state_hash:
-** Old_state + delta != new state - prover crash
-* withdrawal_vault_data - see withdrawal_vault module
-* latest_execution_header_data - see exec_payload module
 */
 
-/* #region Self-check */
-// * Sending a valid input with no tampering should be accepted
-
 mod self_check {
+    // * Sending a valid input with no tampering should be accepted
     use super::*;
     #[ignore = "Hits external prover (slow, incurs costs)"]
     #[tokio::test(flavor = "multi_thread")]
@@ -207,12 +204,80 @@ mod self_check {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let program_input = executor
-            .prepare_actual_input(target_slot)
-            .await
-            .expect("Test should be able to prepare actual input");
+        let program_input = executor.prepare_actual_input(target_slot).await?;
         let result = executor.run(program_input).await;
         executor.assert_accepted(result)
+    }
+}
+
+mod stale_data {
+    use super::*;
+    /*
+     * "Partially old" scenarios (pass correct data for everything, except listed):
+     ** Legit data for a different slot - contract rejects
+     ** WithdrawalVaultData + ExecutionPayloadHeaderData - prover crash
+     ** Outdated old state + legit delta - contract rejects
+     */
+    #[ignore = "Hits external prover (slow, incurs costs)"]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn program_input_tampering_different_refslot_prior_to_bc_slot() -> Result<()> {
+        let executor = TestExecutor::default().await?;
+        let target_slot = executor.env.get_finalized_slot().await?;
+
+        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+
+        program_input.reference_slot -= 1;
+        let result = executor.run(program_input).await;
+        executor.assert_rejected(result)
+    }
+
+    #[ignore = "Hits external prover (slow, incurs costs)"]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn program_input_tampering_different_refslot_after_bc_slot() -> Result<()> {
+        let executor = TestExecutor::default().await?;
+        let target_slot = executor.env.get_finalized_slot().await?;
+
+        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+
+        program_input.reference_slot += 1;
+        let result = executor.run(program_input).await;
+        executor.assert_rejected(result)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn program_input_tampering_different_beacon_slot() -> Result<()> {
+        let executor = TestExecutor::default().await?;
+        let target_slot = executor.env.get_finalized_slot().await?;
+
+        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+
+        program_input.bc_slot -= 1;
+        executor.assert_fails_in_prover(program_input).await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn program_input_tampering_old_vault_data_and_payload_header() -> Result<()> {
+        let executor = TestExecutor::default().await?;
+        let target_slot = executor.env.get_finalized_slot().await?;
+
+        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+
+        let old_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
+        let old_bs = executor.env.read_beacon_state(&StateId::Slot(old_slot)).await?;
+        let withdrawal_vault_address: Address = executor.env.script_runtime.lido_settings.withdrawal_vault_address;
+
+        program_input.withdrawal_vault_data = executor
+            .env
+            .script_runtime
+            .eth_infra
+            .eth_client
+            .get_withdrawal_vault_data(
+                withdrawal_vault_address,
+                old_bs.latest_execution_payload_header.block_hash,
+            )
+            .await?;
+        program_input.latest_execution_header_data = (&old_bs.latest_execution_payload_header).into();
+        executor.assert_fails_in_prover(program_input).await
     }
 }
 
@@ -281,7 +346,13 @@ mod multi_modifications {
 
         update_program_input(&mut program_input, bs, old_bs, &lido_credentials, |mut bs| {
             let balance = 32000000123;
-            bs.validators.push(make_validator(bs.epoch(), balance)).expect("...");
+            bs.validators
+                .push(validator::make(
+                    executor.env.script_runtime.lido_settings.withdrawal_credentials,
+                    validator::Status::Active(target_slot.epoch()),
+                    balance,
+                ))
+                .expect("...");
             bs.balances.push(balance).expect("...");
             bs
         });
@@ -316,20 +387,6 @@ mod multi_modifications {
             bs
         });
         executor.assert_fails_in_prover(program_input).await
-    }
-
-    fn equal_in_any_order<T>(a: &[T], b: &[T]) -> bool
-    where
-        T: Eq + std::hash::Hash,
-    {
-        let a: HashSet<_> = a.iter().collect();
-        let b: HashSet<_> = b.iter().collect();
-
-        a == b
-    }
-
-    fn is_sorted<T: PartialOrd>(val: &[T]) -> bool {
-        val.windows(2).all(|w| w[0] < w[1])
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -629,9 +686,9 @@ mod vals_and_bals {
 
             let new_validators = [0; NEW_VALIDATOR_COUNT].map(|_| {
                 validator::make(
-                    validator::random_pubkey(None),
                     executor.env.script_runtime.lido_settings.withdrawal_credentials,
-                    validator::Status::Active(target_slot.0),
+                    validator::Status::Active(target_slot.epoch()),
+                    validator::DEP_BALANCE,
                 )
             });
 
@@ -655,7 +712,11 @@ mod vals_and_bals {
                 program_input.validators_and_balances.validators_delta.all_added,
                 ValidatorWithIndex {
                     index: program_input.validators_and_balances.total_validators,
-                    validator: make_validator(target_slot.epoch(), 1234554321),
+                    validator: validator::make(
+                        executor.env.script_runtime.lido_settings.withdrawal_credentials,
+                        validator::Status::Active(target_slot.epoch()),
+                        validator::DEP_BALANCE,
+                    ),
                 },
             );
 
@@ -1234,6 +1295,21 @@ mod old_state {
     }
 }
 
+mod new_state {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn program_input_tampering_new_state_not_equal_to_old_plus_delta() -> Result<()> {
+        let executor = TestExecutor::default().await?;
+        let target_slot = executor.env.get_finalized_slot().await?;
+
+        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+
+        program_input.new_lido_validator_state_hash = Hash256::random();
+        executor.assert_fails_in_prover(program_input).await
+    }
+}
+
 mod withdrawal_vault {
     use super::*;
 
@@ -1242,6 +1318,7 @@ mod withdrawal_vault {
     // * Different address (with actual balance for that address), actual contract address proof - prover crash
     // * Correct address, but balance and proof for a wrong slot - prover crash
     // * Address + balance + proof for a wrong address - contract rejects
+    // * WithdrawalVaultData for old slot - prover crash
 
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_withdrawal_vault_wrong_balance() -> Result<()> {
@@ -1357,8 +1434,7 @@ mod exec_payload {
         let old_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
         let old_bs = executor.env.read_beacon_state(&StateId::Slot(old_slot)).await?;
 
-        program_input.latest_execution_header_data =
-            ExecutionPayloadHeaderData::new(&old_bs.latest_execution_payload_header);
+        program_input.latest_execution_header_data = (&old_bs.latest_execution_payload_header).into();
         executor.assert_fails_in_prover(program_input).await
     }
 }
