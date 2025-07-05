@@ -63,7 +63,7 @@ pub struct Eth1Data {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode, TreeHash)]
 pub struct Validator {
-    #[debug("0x{:?}", hex::encode(pubkey.to_vec()))]
+    #[debug("{:#?}", hex::encode(pubkey.to_vec()))]
     pub pubkey: BlsPublicKey,
     pub withdrawal_credentials: WithdrawalCredentials,
     // #[serde(with = "serde_utils::quoted_u64")]
@@ -108,7 +108,7 @@ pub struct ExecutionPayloadHeader {
     pub fee_recipient: Address,
     pub state_root: Root,
     pub receipts_root: Root,
-    #[debug("0x{:?}", hex::encode(logs_bloom.to_vec()))]
+    #[debug("{:#?}", logs_bloom.to_vec())]
     pub logs_bloom: FixedVector<u8, eth_spec::BytesPerLogBloom>,
     pub prev_randao: Hash256,
     // #[serde(with = "serde_utils::quoted_u64")]

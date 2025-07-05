@@ -167,6 +167,12 @@ impl IntegrationTestEnvironment {
             Self::read_latest_bs_at_or_before(Arc::clone(&beacon_state_reader), target_slot, RETRIES).await?;
 
         let fork_block_number = finalized_bs.latest_execution_payload_header.block_number + 2;
+        tracing::info!(
+            "Target slot: {}, finalized slot: {}, EL block number: {}",
+            target_slot,
+            finalized_bs.slot,
+            finalized_bs.latest_execution_payload_header.block_number
+        );
 
         let anvil = Self::start_anvil(fork_url, fork_block_number, FORWARD_ANVIL_LOGS).await?;
 
@@ -311,7 +317,7 @@ impl IntegrationTestEnvironment {
             .get_receipt()
             .await?;
 
-        tracing::debug!("Stubbed hash, {hash:#?} for timestamp {timestamp}");
+        tracing::debug!("Stubbed hash, {hash:#?} for timestamp {timestamp} at {set_root_tx:#?}");
 
         let recorded = beacon_roots_mock.beacon_block_hashes(timestamp).call().await?;
 

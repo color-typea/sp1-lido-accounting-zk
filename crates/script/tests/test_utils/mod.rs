@@ -1,10 +1,7 @@
 #![allow(dead_code)]
 use anyhow::anyhow;
-use hex_literal::hex;
 use sp1_lido_accounting_scripts::consts::{Network, WrappedNetwork};
-use sp1_lido_accounting_zk_shared::eth_consensus_layer::{
-    BeaconStateFields, BeaconStatePrecomputedHashes, Epoch, Hash256, Validator,
-};
+use sp1_lido_accounting_zk_shared::eth_consensus_layer::{BeaconStateFields, BeaconStatePrecomputedHashes, Hash256};
 use sp1_lido_accounting_zk_shared::io::eth_io::{BeaconChainSlot, ReferenceSlot};
 
 pub mod env;
@@ -99,6 +96,7 @@ pub mod validator {
         io::eth_io::{BeaconChainSlot, HaveEpoch},
     };
 
+    #[derive(Clone, Debug, PartialEq)]
     pub enum Status {
         Pending(u64),
         Active(u64),
@@ -135,7 +133,9 @@ pub mod validator {
         pubkey.to_vec().into()
     }
 
-    pub fn make(pubkey: BlsPublicKey, withdrawal_credentials: WithdrawalCredentials, status: Status) -> Validator {
+    pub const DEP_BALANCE: u64 = 32_000_000_000; // 32 ETH in Gwei
+
+    pub fn make(withdrawal_credentials: WithdrawalCredentials, status: Status, balance: u64) -> Validator {
         let (activation_eligibility_epoch, activation_epoch, exit_epoch) = match status {
             Status::Pending(epoch) => (epoch, u64::MAX, u64::MAX),
             Status::Active(activated) => (activated - 2, activated - 1, u64::MAX),
@@ -143,35 +143,15 @@ pub mod validator {
         };
 
         Validator {
-            pubkey,
+            pubkey: random_pubkey(None),
             withdrawal_credentials,
-            effective_balance: 32 * 1_000_000_000,
+            effective_balance: balance,
             slashed: false,
             activation_eligibility_epoch,
             activation_epoch,
             exit_epoch,
             withdrawable_epoch: activation_epoch,
         }
-    }
-}
-
-pub fn make_validator(current_epoch: Epoch, balance: u64) -> Validator {
-    let activation_eligibility_epoch: u64 = current_epoch - 10;
-    let activation_epoch: u64 = current_epoch - 5;
-    let exit_epoch: u64 = u64::MAX;
-    let withdrawable_epoch: u64 = current_epoch - 3;
-    let bls_key: Vec<u8> =
-        hex!("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef").into();
-
-    Validator {
-        pubkey: bls_key.into(),
-        withdrawal_credentials: hex!("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff").into(),
-        effective_balance: balance,
-        slashed: false,
-        activation_eligibility_epoch,
-        activation_epoch,
-        exit_epoch,
-        withdrawable_epoch,
     }
 }
 
