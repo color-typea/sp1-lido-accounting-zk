@@ -17,6 +17,7 @@ use sp1_lido_accounting_zk_shared::{
         eth_io::{BeaconChainSlot, HaveEpoch},
         program_io::WithdrawalVaultData,
     },
+    lido::{ValidatorOps, ValidatorStatus},
 };
 use test_utils::{env::IntegrationTestEnvironment, mark_as_refslot};
 use tree_hash::TreeHash;
@@ -24,6 +25,8 @@ use tree_hash::TreeHash;
 use crate::test_utils::{adjustments::Adjuster, validator, DEPLOY_SLOT};
 
 type WithdrawalVaultDataMutator = dyn Fn(WithdrawalVaultData) -> WithdrawalVaultData;
+
+const PRINT_VALIDATOR_STATES: bool = true;
 
 #[derive(Debug, thiserror::Error)]
 enum TestError {
@@ -194,6 +197,7 @@ impl TestExecutor {
             false,
         )
         .expect("Failed to prepare program input");
+
         tracing::info!("Requesting proof");
         let try_proof = self.env.script_runtime.sp1_infra.sp1_client.prove(program_input);
 
@@ -249,12 +253,11 @@ impl TestExecutor {
     }
 }
 
-fn validator_indices<P>(bs: &BeaconState, positions: &[usize], predicate: P) -> Vec<usize>
+fn all_validator_indices<P>(bs: &BeaconState, predicate: P) -> Vec<usize>
 where
     P: Fn(&Validator) -> bool,
 {
-    let filtered_validator_indices: Vec<usize> = bs
-        .validators
+    bs.validators
         .iter()
         .enumerate()
         .filter_map(
@@ -266,7 +269,14 @@ where
                 }
             },
         )
-        .collect();
+        .collect()
+}
+
+fn positional_validator_indices<P>(bs: &BeaconState, positions: &[usize], predicate: P) -> Vec<usize>
+where
+    P: Fn(&Validator) -> bool,
+{
+    let filtered_validator_indices: Vec<usize> = all_validator_indices(bs, predicate);
     positions.iter().map(|idx| filtered_validator_indices[*idx]).collect()
 }
 
@@ -317,6 +327,19 @@ Withdrawal vault
 // Flipping this to false should cause all tests to fail generating proof
 const MODIFY_BEACON_BLOCK_HASH: bool = true;
 
+fn create_validators_and_balances(
+    count: usize,
+    withdrawal_credentials: Hash256,
+    status: validator::Status,
+    balance: u64,
+) -> (Vec<Validator>, Vec<u64>) {
+    let validators = (0..count)
+        .map(|_| validator::make(withdrawal_credentials, status.clone(), balance))
+        .collect();
+    let balances = vec![balance; count];
+    (validators, balances)
+}
+
 async fn setup_executor() -> Result<(TestExecutor, BeaconChainSlot)> {
     tracing_config::setup_logger(tracing_config::LoggingConfig::default());
     let env = IntegrationTestEnvironment::default().await?;
@@ -326,16 +349,16 @@ async fn setup_executor() -> Result<(TestExecutor, BeaconChainSlot)> {
 
     let lido_credentials: Hash256 = executor.lido_withdrawal_credentials();
 
-    let old_bs = executor.env.read_beacon_state(&StateId::Slot(DEPLOY_SLOT)).await?;
-    let old_bh = executor
+    let original_bs = executor.env.read_beacon_state(&StateId::Slot(DEPLOY_SLOT)).await?;
+    let original_bh = executor
         .env
         .read_beacon_block_header(&StateId::Slot(DEPLOY_SLOT))
         .await?;
 
     // Ensuring we have a diverse set of validators in different states to work with
-    let mut adjuster = Adjuster::start_with(&old_bs, &old_bh).set_slot(&target_slot);
+    let mut adjuster = Adjuster::start_with(&original_bs, &original_bh).set_slot(&target_slot);
 
-    let existing_validator_indices: Vec<usize> = old_bs
+    let existing_validator_indices: Vec<usize> = original_bs
         .validators
         .to_vec()
         .iter()
@@ -356,35 +379,50 @@ async fn setup_executor() -> Result<(TestExecutor, BeaconChainSlot)> {
         "Need to have more than 3 existing validators in the original beacon state"
     );
 
-    const NEW_LIDO_VALIDATOR_COUNT: usize = 5;
-    const NEW_OTHER_VALIDATOR_COUNT: usize = 3;
-    const NEW_LIDO_EXITED_COUNT: usize = 2;
+    const EXISTING_LIDO_EXITED_COUNT: usize = 2;
 
-    let new_lido_validators = [0; NEW_LIDO_VALIDATOR_COUNT].map(|_| {
-        validator::make(
-            validator::random_pubkey(None),
-            lido_credentials,
-            validator::Status::Active(target_slot.0),
-        )
-    });
+    let new_active_lido = create_validators_and_balances(
+        5,
+        lido_credentials,
+        validator::Status::Active(target_slot.epoch()),
+        validator::DEP_BALANCE,
+    );
 
-    let new_other_validators = [0; NEW_OTHER_VALIDATOR_COUNT].map(|_| {
-        validator::make(
-            validator::random_pubkey(None),
-            Hash256::random(),
-            validator::Status::Active(target_slot.0),
-        )
-    });
+    let new_pending_lido = create_validators_and_balances(
+        2,
+        lido_credentials,
+        validator::Status::Pending(target_slot.epoch() + 2),
+        0,
+    );
+
+    let new_exited_lido = create_validators_and_balances(
+        2,
+        lido_credentials,
+        validator::Status::Exited {
+            activated: target_slot.epoch() - 2,
+            exited: target_slot.epoch() - 1,
+        },
+        validator::DEP_BALANCE,
+    );
+
+    let new_other = create_validators_and_balances(
+        3,
+        Hash256::random(),
+        validator::Status::Active(target_slot.epoch()),
+        validator::DEP_BALANCE,
+    );
 
     adjuster = adjuster
-        .add_validators(&new_lido_validators, &[0; NEW_LIDO_VALIDATOR_COUNT])
-        .add_validators(&new_other_validators, &[0; NEW_OTHER_VALIDATOR_COUNT]);
+        .add_validators(&new_active_lido.0, &new_active_lido.1)
+        .add_validators(&new_pending_lido.0, &new_pending_lido.1)
+        .add_validators(&new_other.0, &new_other.1)
+        .add_validators(&new_exited_lido.0, &new_exited_lido.1);
 
     let old_epoch = DEPLOY_SLOT.epoch();
     let existing_non_exited: Vec<usize> = existing_validator_indices
         .into_iter()
         .filter(|index| {
-            let validator = old_bs.validators.get(*index).expect("Must exist");
+            let validator = original_bs.validators.get(*index).expect("Must exist");
             validator.exit_epoch >= old_epoch
         })
         .collect();
@@ -392,12 +430,12 @@ async fn setup_executor() -> Result<(TestExecutor, BeaconChainSlot)> {
     // Same, just cutting corners - if this assert fails just need to "artificially" create more exited validators
     // at the original slot
     assert!(
-        existing_non_exited.len() > NEW_LIDO_EXITED_COUNT,
-        "Need to have more than {NEW_LIDO_EXITED_COUNT} existing validators in the original beacon state"
+        existing_non_exited.len() > EXISTING_LIDO_EXITED_COUNT,
+        "Need to have more than {EXISTING_LIDO_EXITED_COUNT} existing validators in the original beacon state"
     );
 
-    for to_exit in existing_non_exited.iter().take(NEW_LIDO_EXITED_COUNT) {
-        let old_validator = old_bs.validators.get(*to_exit).expect("Must exist");
+    for to_exit in existing_non_exited.iter().take(EXISTING_LIDO_EXITED_COUNT) {
+        let old_validator = original_bs.validators.get(*to_exit).expect("Must exist");
         let mut new_validator = old_validator.clone();
         new_validator.exit_epoch = target_slot.epoch() - 1;
         adjuster = adjuster.set_validator(*to_exit, new_validator);
@@ -405,9 +443,27 @@ async fn setup_executor() -> Result<(TestExecutor, BeaconChainSlot)> {
 
     let (new_bs, new_bh) = adjuster.build();
     executor.env.mock_beacon_state_roots_contract().await?;
-    // SInce we're mocking beacon state roots, we have to provide old hashes as well
-    executor.env.record_hash(&old_bh).await?;
+    // Since we're mocking beacon state roots, we have to provide old hashes as well
+    executor.env.record_hash(&original_bh).await?;
     executor.env.stub_state(&new_bs, &new_bh).await?;
+
+    if PRINT_VALIDATOR_STATES {
+        tracing::info!("Lido validators in the new state:");
+        for (index, validator) in new_bs.validators.iter().enumerate() {
+            if index < 1973 {
+                continue;
+            }
+            tracing::info!(
+                "Index: {}, Status: {:?}, Lido?: {}, activation_elig: {}, activation_epoch: {}, exit_epoch: {}",
+                index,
+                validator.status(new_bs.epoch()),
+                validator.is_lido(&lido_credentials),
+                validator.activation_eligibility_epoch,
+                validator.activation_epoch,
+                validator.exit_epoch
+            );
+        }
+    }
 
     Ok((executor, target_slot))
 }
@@ -546,7 +602,6 @@ async fn data_tampering_add_active_non_lido_validator() -> Result<()> {
     executor.assert_rejected(result)
 }
 
-#[ignore]
 #[tokio::test(flavor = "multi_thread")]
 async fn data_tampering_remove_lido_validator() -> Result<()> {
     let (mut executor, target_slot) = setup_executor().await?;
@@ -559,7 +614,7 @@ async fn data_tampering_remove_lido_validator() -> Result<()> {
             let mut new_bs = beacon_state.clone();
             let is_lido_pred = is_lido(lido_creds);
 
-            let validator_idx = validator_indices(&beacon_state, &[0], is_lido_pred)[0];
+            let validator_idx = positional_validator_indices(&beacon_state, &[0], is_lido_pred)[0];
             let mut new_validators: Vec<Validator> = new_bs.validators.to_vec();
             new_validators.remove(validator_idx);
             new_bs.validators = new_validators.into();
@@ -574,7 +629,6 @@ async fn data_tampering_remove_lido_validator() -> Result<()> {
     executor.assert_failed_proof(result)
 }
 
-#[ignore]
 #[tokio::test(flavor = "multi_thread")]
 async fn data_tampering_remove_multi_lido_validator() -> Result<()> {
     let (mut executor, target_slot) = setup_executor().await?;
@@ -587,7 +641,7 @@ async fn data_tampering_remove_multi_lido_validator() -> Result<()> {
             let mut new_bs = beacon_state.clone();
             let is_lido_pred = is_lido(lido_creds);
 
-            let remove_idxs = validator_indices(&beacon_state, &[0, 1, 3], is_lido_pred);
+            let remove_idxs = positional_validator_indices(&beacon_state, &[0, 1, 3], is_lido_pred);
             let new_validators: Vec<Validator> = new_bs
                 .validators
                 .to_vec()
@@ -626,7 +680,6 @@ async fn data_tampering_remove_multi_lido_validator() -> Result<()> {
     executor.assert_failed_proof(result)
 }
 
-#[ignore]
 #[tokio::test(flavor = "multi_thread")]
 async fn data_tampering_change_lido_to_non_lido_validator() -> Result<()> {
     let (mut executor, target_slot) = setup_executor().await?;
@@ -639,7 +692,7 @@ async fn data_tampering_change_lido_to_non_lido_validator() -> Result<()> {
             let mut new_bs = beacon_state.clone();
             let is_lido_pred = is_lido(lido_creds);
 
-            let validator_idx = validator_indices(&beacon_state, &[0], is_lido_pred)[0];
+            let validator_idx = positional_validator_indices(&beacon_state, &[0], is_lido_pred)[0];
             new_bs.validators[validator_idx].withdrawal_credentials = [0u8; 32].into();
             new_bs
         },
@@ -649,7 +702,6 @@ async fn data_tampering_change_lido_to_non_lido_validator() -> Result<()> {
     executor.assert_failed_proof(result)
 }
 
-#[ignore]
 #[tokio::test(flavor = "multi_thread")]
 async fn data_tampering_change_non_lido_to_lido_validator() -> Result<()> {
     let (mut executor, target_slot) = setup_executor().await?;
@@ -662,7 +714,7 @@ async fn data_tampering_change_non_lido_to_lido_validator() -> Result<()> {
             let mut new_bs = beacon_state.clone();
             let is_non_lido_pred = is_non_lido(lido_creds);
 
-            let validator_idx = validator_indices(&beacon_state, &[0], is_non_lido_pred)[0];
+            let validator_idx = positional_validator_indices(&beacon_state, &[0], is_non_lido_pred)[0];
             new_bs.validators[validator_idx].withdrawal_credentials =
                 executor.env.script_runtime.lido_settings.withdrawal_credentials;
             new_bs
@@ -686,7 +738,7 @@ async fn data_tampering_change_lido_make_exited() -> Result<()> {
             let mut new_bs = beacon_state.clone();
             let is_lido_pred = is_lido(lido_creds);
 
-            let validator_idx = validator_indices(&beacon_state, &[0], is_lido_pred)[0];
+            let validator_idx = positional_validator_indices(&beacon_state, &[0], is_lido_pred)[0];
             new_bs.validators[validator_idx].exit_epoch = new_bs.epoch() - 10;
             new_bs
         },
@@ -702,16 +754,23 @@ async fn data_tampering_omit_new_deposited_lido_validator() -> Result<()> {
     let (mut executor, target_slot) = setup_executor().await?;
     let lido_creds = executor.lido_withdrawal_credentials();
 
+    let old_bs = executor.env.read_beacon_state(&StateId::Slot(DEPLOY_SLOT)).await?;
+    let max_old_validator_index = old_bs.validators.len() - 1;
+
     executor.set_bs_mutator(
         StateId::Slot(target_slot),
         MODIFY_BEACON_BLOCK_HASH,
         move |beacon_state| {
             let mut new_bs = beacon_state.clone();
-            let is_lido_pred = is_lido(lido_creds);
+            let epoch = new_bs.epoch();
 
-            // old state https://sepolia.beaconcha.in/slot/5832096 had only 1 validator - all others are now "added"
-            let added_deposited_idx = 3;
-            let validator_idx = validator_indices(&beacon_state, &[added_deposited_idx], is_lido_pred)[0];
+            let all_lido_deposited: Vec<usize> = all_validator_indices(&beacon_state, |validator| {
+                validator.withdrawal_credentials == lido_creds && validator.status(epoch) == ValidatorStatus::Exited
+            })
+            .into_iter()
+            .filter(|&idx| idx > max_old_validator_index)
+            .collect();
+            let validator_idx = all_lido_deposited[0];
             let mut new_validators: Vec<Validator> = new_bs.validators.to_vec();
             new_validators.remove(validator_idx);
             new_bs.validators = new_validators.into();
@@ -728,7 +787,7 @@ async fn data_tampering_omit_new_deposited_lido_validator() -> Result<()> {
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn data_tampering_omit_exited_lido_validator() -> Result<()> {
+async fn data_tampering_omit_change_to_exited_state_lido_validator() -> Result<()> {
     let (mut executor, target_slot) = setup_executor().await?;
     let lido_creds = executor.lido_withdrawal_credentials();
 
@@ -737,10 +796,12 @@ async fn data_tampering_omit_exited_lido_validator() -> Result<()> {
         MODIFY_BEACON_BLOCK_HASH,
         move |beacon_state| {
             let mut new_bs = beacon_state.clone();
-            let is_lido_pred = is_lido(lido_creds);
-            // old state https://sepolia.beaconcha.in/slot/5832096 had only 1 validator - all others are now "added"
-            let added_exited_idx = 3;
-            let validator_idx = validator_indices(&beacon_state, &[added_exited_idx], is_lido_pred)[0];
+            let epoch = new_bs.epoch();
+            let all_lido_exited = all_validator_indices(&beacon_state, |validator| {
+                validator.withdrawal_credentials == lido_creds && validator.status(epoch) == ValidatorStatus::Exited
+            });
+
+            let validator_idx = all_lido_exited[1]; // picking the second exited validator
             let mut new_validators: Vec<Validator> = new_bs.validators.to_vec();
             new_validators.remove(validator_idx);
             new_bs.validators = new_validators.into();
@@ -759,9 +820,34 @@ async fn data_tampering_omit_exited_lido_validator() -> Result<()> {
 // had no validators in pending state
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
-async fn data_tampering_omit_pending_lido_validator_STUB() -> Result<()> {
-    //TODO: implement test with pending validators
-    Ok(())
+async fn data_tampering_omit_pending_lido_validator() -> Result<()> {
+    let (mut executor, target_slot) = setup_executor().await?;
+    let lido_creds = executor.lido_withdrawal_credentials();
+
+    executor.set_bs_mutator(
+        StateId::Slot(target_slot),
+        MODIFY_BEACON_BLOCK_HASH,
+        move |beacon_state| {
+            let mut new_bs = beacon_state.clone();
+            let epoch = new_bs.epoch();
+            let all_lido_pending = all_validator_indices(&beacon_state, |validator| {
+                validator.withdrawal_credentials == lido_creds
+                    && validator.status(epoch) == ValidatorStatus::FutureDeposit
+            });
+
+            let validator_idx = all_lido_pending[1]; // picking the second pending validator
+            let mut new_validators: Vec<Validator> = new_bs.validators.to_vec();
+            new_validators.remove(validator_idx);
+            new_bs.validators = new_validators.into();
+            let mut new_balances: Vec<u64> = new_bs.balances.to_vec();
+            new_balances.remove(validator_idx);
+            new_bs.balances = new_balances.into();
+            new_bs
+        },
+    );
+
+    let result = executor.run_test(target_slot).await;
+    executor.assert_rejected(result)
 }
 
 #[ignore]
@@ -777,7 +863,7 @@ async fn data_tampering_balance_change_lido_validator_balance() -> Result<()> {
             let mut new_bs = beacon_state.clone();
             let is_lido_pred = is_lido(lido_creds);
 
-            let validator_idx = validator_indices(&beacon_state, &[0], is_lido_pred)[0];
+            let validator_idx = positional_validator_indices(&beacon_state, &[0], is_lido_pred)[0];
             new_bs.balances[validator_idx] += 10;
             new_bs
         },
@@ -800,7 +886,7 @@ async fn data_tampering_balance_change_multi_lido_validator_balance() -> Result<
             let mut new_bs = beacon_state.clone();
             let is_lido_pred = is_lido(lido_creds);
 
-            let _adjust_idxs = validator_indices(&beacon_state, &[0, 1, 3], is_lido_pred);
+            let _adjust_idxs = positional_validator_indices(&beacon_state, &[0, 1, 3], is_lido_pred);
             for idx in _adjust_idxs {
                 new_bs.balances[idx] = 0;
             }
@@ -825,7 +911,7 @@ async fn data_tampering_balance_change_lido_validator_balance_cancel_out() -> Re
             let mut new_bs = beacon_state.clone();
             let is_lido_pred = is_lido(lido_creds);
 
-            let indices_to_adjust = validator_indices(&beacon_state, &[1, 3], is_lido_pred);
+            let indices_to_adjust = positional_validator_indices(&beacon_state, &[1, 3], is_lido_pred);
             let source = indices_to_adjust[0];
             let dest = indices_to_adjust[1];
             print!(
@@ -843,7 +929,6 @@ async fn data_tampering_balance_change_lido_validator_balance_cancel_out() -> Re
     executor.assert_rejected(result)
 }
 
-#[ignore]
 #[tokio::test(flavor = "multi_thread")]
 async fn data_tampering_withdrawal_vault_tampered_balance() -> Result<()> {
     let (mut executor, target_slot) = setup_executor().await?;
@@ -859,7 +944,6 @@ async fn data_tampering_withdrawal_vault_tampered_balance() -> Result<()> {
     executor.assert_failed_proof(result)
 }
 
-#[ignore]
 #[tokio::test(flavor = "multi_thread")]
 async fn data_tampering_withdrawal_vault_tampered_proof() -> Result<()> {
     let (mut executor, target_slot) = setup_executor().await?;
@@ -878,7 +962,6 @@ async fn data_tampering_withdrawal_vault_tampered_proof() -> Result<()> {
     executor.assert_failed_proof(result)
 }
 
-#[ignore]
 #[tokio::test(flavor = "multi_thread")]
 async fn data_tampering_withdrawal_vault_different_slot() -> Result<()> {
     let (mut executor, target_slot) = setup_executor().await?;
