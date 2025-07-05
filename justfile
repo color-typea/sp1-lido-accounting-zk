@@ -105,16 +105,16 @@ download_header target_slot:
 download_bs target_slot format="ssz": (download_state target_slot) (download_header target_slot)
 
 add_test_bs target_slot format="ssz": (download_bs target_slot) (download_bs target_slot)
-    cp temp/beacon_states/$EVM_CHAIN/bs_{{target_slot}}_header.json script/tests/data/beacon_states/bs_{{target_slot}}_header.json
-    cp temp/beacon_states/$EVM_CHAIN/bs_{{target_slot}}.{{ if format == "ssz" { "ssz" } else { "json" } }} script/tests/data/beacon_states/bs_{{target_slot}}.{{ if format == "ssz" { "ssz" } else { "json" } }}
+    cp temp/beacon_states/$EVM_CHAIN/bs_{{target_slot}}_header.json crates/script/tests/data/beacon_states/bs_{{target_slot}}_header.json
+    cp temp/beacon_states/$EVM_CHAIN/bs_{{target_slot}}.{{ if format == "ssz" { "ssz" } else { "json" } }} crates/script/tests/data/beacon_states/bs_{{target_slot}}.{{ if format == "ssz" { "ssz" } else { "json" } }}
 
 read_validators target_slot:
     curl $CONSENSUS_LAYER_RPC/eth/v1/beacon/states/{{target_slot}}/validators > temp/vals_bals/$EVM_CHAIN/validators_{{target_slot}}.json
     curl $CONSENSUS_LAYER_RPC/eth/v1/beacon/states/{{target_slot}}/validator_balances > temp/vals_bals/$EVM_CHAIN/balances_{{target_slot}}.json
 
 ### Testing ###
-test_update_fixtures target_slot='7700384' previous_slot='7643456': build
-    ./target/release/write_test_fixture --target-ref-slot {{target_slot}} {{ if previous_slot != "0" { "--previous-ref-slot "+previous_slot } else { "" } }}
+test_update_fixtures target_slot='0' previous_slot='0': build
+    ./target/release/write_test_fixture {{ if target_slot != "0" { "--target-ref-slot "+target_slot } else { "" } }} {{ if previous_slot != "0" { "--previous-ref-slot "+previous_slot } else { "" } }}
     
 [working-directory: 'contracts']
 test_contracts:
@@ -134,11 +134,11 @@ test_program:
 # many in parallel, consuming all the memory and grinding to a halt)
 [working-directory: 'crates/script']
 test_script:
-    SP1_SKIP_PROGRAM_BUILD=true RUST_LOG=info cargo test -j 5 -- --test-threads=5 --nocapture
+    SP1_SKIP_PROGRAM_BUILD=true RUST_LOG=warn cargo test -j 5 -- --test-threads=5
 
 [working-directory: 'crates/script']
 integration_test:
-    SP1_SKIP_PROGRAM_BUILD=true cargo test -j 5 -- --test-threads 5 --include-ignored --nocapture
+    SP1_SKIP_PROGRAM_BUILD=true RUST_LOG=warn cargo test -j 5 -- --test-threads 5 --include-ignored 2>&1 > test.log
 
 test: test_contracts test_shared test_script
 

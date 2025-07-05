@@ -35,7 +35,6 @@ use sp1_lido_accounting_zk_shared::{
         eth_io::{BeaconChainSlot, HaveEpoch, HaveSlotWithBlock},
         program_io::WithdrawalVaultData,
     },
-    lido::ValidatorOps,
 };
 use sp1_sdk::ProverClient;
 use std::{
@@ -54,7 +53,8 @@ use crate::test_utils::{
 use lazy_static::lazy_static;
 
 pub const RETRIES: usize = 3;
-const FORWARD_ANVIL_LOGS: bool = true;
+const SUPPRESS_LOGS: bool = false;
+const FORWARD_ANVIL_LOGS: bool = SUPPRESS_LOGS && false;
 
 sol!(
     #[allow(missing_docs)]
@@ -105,7 +105,9 @@ pub struct IntegrationTestEnvironment {
 
 impl IntegrationTestEnvironment {
     pub async fn default() -> anyhow::Result<Self> {
-        tracing_config::setup_logger(tracing_config::LoggingConfig::default());
+        if !SUPPRESS_LOGS {
+            tracing_config::setup_logger(tracing_config::LoggingConfig::default());
+        }
         Self::new(test_utils::NETWORK.clone(), test_utils::DEPLOY_SLOT).await
     }
 
@@ -391,6 +393,10 @@ impl IntegrationTestEnvironment {
     }
 
     pub async fn mock_beacon_state_roots_contract(&mut self) -> anyhow::Result<()> {
+        if self.beacon_roots_mock.is_some() {
+            tracing::warn!("BeaconRootsMock is already initialized, skipping re-initialization");
+            return Ok(());
+        }
         tracing::info!("Replacing BEACON_STATE_ROOTS contract bytecode");
         let provider = Arc::clone(&self.script_runtime.eth_infra.provider);
         let old_bytecode = provider.get_code_at(BEACON_ROOTS_ADDRESS).latest().await?;
@@ -450,7 +456,10 @@ impl IntegrationTestEnvironment {
             *target_slot,
         );
 
-        self.mock_beacon_state_roots_contract().await?;
+        if self.beacon_roots_mock.is_none() {
+            tracing::info!("Initializing beacon state roots mock contract");
+            self.mock_beacon_state_roots_contract().await?;
+        }
         // Since we're mocking beacon state roots, we have to provide old hashes as well
         self.record_hash(&original_bh).await?;
 

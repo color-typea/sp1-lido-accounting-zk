@@ -11,7 +11,6 @@ use sp1_lido_accounting_scripts::{
     beacon_state_reader::StateId,
     eth_client::{self, Sp1LidoAccountingReportContract::Sp1LidoAccountingReportContractErrors},
     sp1_client_wrapper::{self, SP1ClientWrapper},
-    tracing as tracing_config,
 };
 
 use sp1_lido_accounting_zk_shared::eth_consensus_layer::BeaconStateFields;
@@ -81,7 +80,6 @@ struct TestExecutor {
 
 impl TestExecutor {
     async fn default() -> anyhow::Result<Self> {
-        tracing_config::setup_logger(tracing_config::LoggingConfig::default());
         let env = IntegrationTestEnvironment::default().await?;
         Ok(Self { env })
     }
@@ -1031,12 +1029,16 @@ mod vals_and_bals {
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_lido_changed_emptied_old_has_pending_fails() -> Result<()>
         {
+            let target_slot = REPORT_COMPUTE_SLOT + 1;
             let mut env = IntegrationTestEnvironment::default().await?;
-            let adjustments = env.make_adjustments(&DEPLOY_SLOT).await?.add_lido_pending(3);
-            env.apply(adjustments).await?;
+            let adjustments_at_deploy = env.make_adjustments(&DEPLOY_SLOT).await?.add_lido_pending(3);
+            env.apply(adjustments_at_deploy).await?;
+
+            let adjustments_at_target = env.make_adjustments(&target_slot).await?.add_lido_pending(3);
+            env.apply(adjustments_at_target).await?;
             let executor = TestExecutor::new(env);
 
-            let mut program_input = executor.prepare_input_no_ver(REPORT_COMPUTE_SLOT + 1).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.lido_changed = vec![];
 

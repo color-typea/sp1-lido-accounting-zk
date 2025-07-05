@@ -10,7 +10,6 @@ use sp1_lido_accounting_scripts::{
     proof_storage::StoredProof,
     scripts::shared as shared_logic,
     sp1_client_wrapper::{SP1ClientWrapper, SP1ClientWrapperImpl},
-    tracing as tracing_config,
 };
 
 use hex_literal::hex;
@@ -63,7 +62,6 @@ impl<M: Fn(PublicValuesRust) -> PublicValuesRust> TestExecutor<M> {
     }
 
     async fn run_test(&self) -> TestExecutorResult {
-        tracing_config::setup_logger(tracing_config::LoggingConfig::default());
         let lido_withdrawal_credentials: Hash256 = self.env.script_runtime.lido_settings.withdrawal_credentials;
         let stored_proof = self.get_stored_proof()?;
 
@@ -246,7 +244,7 @@ async fn report_tampering_sanity_check_should_pass() -> Result<()> {
 async fn report_tampering_report_slot() -> Result<()> {
     let executor = TestExecutor::new(wrap_report_mapper(|report| {
         let mut new_report = report.clone();
-        new_report.reference_slot = new_report.reference_slot - 1;
+        new_report.reference_slot -= 1;
         new_report
     }))
     .await?;
@@ -258,7 +256,7 @@ async fn report_tampering_report_slot() -> Result<()> {
 async fn report_tampering_report_slot2() -> Result<()> {
     let executor = TestExecutor::new(wrap_report_mapper(|report| {
         let mut new_report = report.clone();
-        new_report.reference_slot = new_report.reference_slot + 10;
+        new_report.reference_slot += 10;
         new_report
     }))
     .await?;

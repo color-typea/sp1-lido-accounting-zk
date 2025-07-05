@@ -10,7 +10,7 @@ pub mod files;
 pub static NETWORK: WrappedNetwork = WrappedNetwork::Anvil(Network::Sepolia);
 pub const DEPLOY_SLOT: BeaconChainSlot = BeaconChainSlot(7643456);
 
-pub const REPORT_COMPUTE_SLOT: BeaconChainSlot = BeaconChainSlot(7700384);
+pub const REPORT_COMPUTE_SLOT: BeaconChainSlot = BeaconChainSlot(7998592);
 
 pub fn eyre_to_anyhow(err: eyre::Error) -> anyhow::Error {
     anyhow!("Eyre error: {:#?}", err)

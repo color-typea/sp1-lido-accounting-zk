@@ -43,10 +43,27 @@ async fn program_input_integration_test() -> Result<()> {
     let new_bh = test_files.read_beacon_block_header(&report_state_id).await?;
 
     // sanity-check
-    let lido_validator_ids = [1973, 1974, 1975, 1976, 1977, 1978];
-    let balances: Vec<u64> = lido_validator_ids.iter().map(|idx| new_bs.balances[*idx]).collect();
+    let actual_lido_validator_ids: Vec<usize> = new_bs
+        .validators
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, v)| {
+            if v.withdrawal_credentials == env.script_runtime.lido_settings.withdrawal_credentials {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let expected_lido_validator_ids = [1973, 1974, 1975, 1976, 1977, 1978];
+    assert_eq!(actual_lido_validator_ids, expected_lido_validator_ids);
+
+    let balances: Vec<u64> = actual_lido_validator_ids
+        .iter()
+        .map(|idx| new_bs.balances[*idx])
+        .collect();
     let cl_balance_sum: u64 = balances.iter().sum();
-    assert_eq!(cl_balance_sum, 96000491967);
 
     let withdrawal_vault_data = test_files.read_withdrawal_vault_data(&report_state_id).await?;
     let expected_wv_balance = withdrawal_vault_data.balance;
