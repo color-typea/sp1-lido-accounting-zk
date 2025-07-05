@@ -81,19 +81,16 @@ struct TestExecutor {
 
 impl TestExecutor {
     async fn default() -> anyhow::Result<Self> {
-        Self::new(test_utils::DEPLOY_SLOT).await
-    }
-
-    async fn new(deploy_slot: BeaconChainSlot) -> anyhow::Result<Self> {
         tracing_config::setup_logger(tracing_config::LoggingConfig::default());
-        let env = IntegrationTestEnvironment::new(test_utils::NETWORK.clone(), deploy_slot).await?;
-
-        let instance = Self { env };
-
-        Ok(instance)
+        let env = IntegrationTestEnvironment::default().await?;
+        Ok(Self { env })
     }
 
-    pub async fn prepare_actual_input(&self, target_slot: BeaconChainSlot) -> anyhow::Result<ProgramInput> {
+    fn new(env: IntegrationTestEnvironment) -> Self {
+        Self { env }
+    }
+
+    async fn prepare_input(&self, target_slot: BeaconChainSlot, verify: bool) -> anyhow::Result<ProgramInput> {
         let lido_withdrawal_credentials: Hash256 = self.env.script_runtime.lido_settings.withdrawal_credentials;
 
         let reference_slot = mark_as_refslot(target_slot);
@@ -113,9 +110,17 @@ impl TestExecutor {
             &old_bs,
             &lido_withdrawal_credentials,
             withdrawal_vault_data,
-            false,
+            verify,
         )?;
         Ok(program_input)
+    }
+
+    pub async fn prepare_input_no_ver(&self, target_slot: BeaconChainSlot) -> anyhow::Result<ProgramInput> {
+        self.prepare_input(target_slot, false).await
+    }
+
+    pub async fn prepare_input_ver(&self, target_slot: BeaconChainSlot) -> anyhow::Result<ProgramInput> {
+        self.prepare_input(target_slot, true).await
     }
 
     pub async fn get_old_slot(&self) -> anyhow::Result<BeaconChainSlot> {
@@ -127,12 +132,6 @@ impl TestExecutor {
             .get_latest_validator_state_slot()
             .await?;
         Ok(res)
-    }
-
-    pub async fn get_old_beacon_state(&self) -> anyhow::Result<BeaconState> {
-        let old_slot = self.get_old_slot().await?;
-        let old_bs = self.env.read_beacon_state(&StateId::Slot(old_slot)).await?;
-        Ok(old_bs)
     }
 
     pub async fn assert_fails_in_prover(&self, program_input: ProgramInput) -> anyhow::Result<()> {
@@ -187,13 +186,19 @@ impl TestExecutor {
     }
 }
 
-/*
-Test scenarios:
-# Overall
+async fn setup_no_adjustments() -> Result<(TestExecutor, BeaconChainSlot)> {
+    let env = IntegrationTestEnvironment::default().await?;
+    let target_slot = env.get_finalized_slot().await?;
 
+    Ok((TestExecutor::new(env), target_slot))
+}
 
-* Correct old state, different lido withdrawal credentials for delta, new = old + delta - prover crash
-*/
+async fn setup_default_adjustments() -> Result<(TestExecutor, BeaconChainSlot)> {
+    let mut env = IntegrationTestEnvironment::default().await?;
+    let target_slot = env.get_finalized_slot().await?;
+    env.apply_standard_adjustments(&target_slot).await?;
+    Ok((TestExecutor::new(env), target_slot))
+}
 
 mod self_check {
     // * Sending a valid input with no tampering should be accepted
@@ -201,10 +206,9 @@ mod self_check {
     #[ignore = "Hits external prover (slow, incurs costs)"]
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_no_tampering_should_pass() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
 
-        let program_input = executor.prepare_actual_input(target_slot).await?;
+        let program_input = executor.prepare_input_no_ver(target_slot).await?;
         let result = executor.run(program_input).await;
         executor.assert_accepted(result)
     }
@@ -221,10 +225,9 @@ mod stale_data {
     #[ignore = "Hits external prover (slow, incurs costs)"]
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_different_refslot_prior_to_bc_slot() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.reference_slot -= 1;
         let result = executor.run(program_input).await;
@@ -234,10 +237,9 @@ mod stale_data {
     #[ignore = "Hits external prover (slow, incurs costs)"]
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_different_refslot_after_bc_slot() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.reference_slot += 1;
         let result = executor.run(program_input).await;
@@ -246,10 +248,9 @@ mod stale_data {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_different_beacon_slot() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.bc_slot -= 1;
         executor.assert_fails_in_prover(program_input).await
@@ -257,10 +258,9 @@ mod stale_data {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_old_vault_data_and_payload_header() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         let old_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
         let old_bs = executor.env.read_beacon_state(&StateId::Slot(old_slot)).await?;
@@ -282,6 +282,8 @@ mod stale_data {
 }
 
 mod multi_modifications {
+    use sp1_lido_accounting_zk_shared::lido::{ValidatorOps, ValidatorStatus};
+
     use super::*;
 
     fn update_program_input(
@@ -311,10 +313,9 @@ mod multi_modifications {
     #[ignore = "Hits external prover (slow, incurs costs)"]
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_multi_wrong_withdrawal_credentials_with_recompute() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_default_adjustments().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         let bs = executor.env.read_beacon_state(&StateId::Slot(target_slot)).await?;
         let old_bs = executor
@@ -331,10 +332,9 @@ mod multi_modifications {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_multi_vals_and_bals_added_balance_with_recompute() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         let bs = executor.env.read_beacon_state(&StateId::Slot(target_slot)).await?;
         let old_bs = executor
@@ -361,10 +361,9 @@ mod multi_modifications {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_multi_vals_and_bals_modified_balance_with_recompute() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         let bs = executor.env.read_beacon_state(&StateId::Slot(target_slot)).await?;
         let old_bs = executor
@@ -391,20 +390,31 @@ mod multi_modifications {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_multi_shuffle_added_with_recompute() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_default_adjustments().await?;
+        let lido_credentials = executor.env.script_runtime.lido_settings.withdrawal_credentials;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         let old_state = &program_input.old_lido_validator_state;
 
         let delta = &program_input.validators_and_balances.validators_delta;
 
-        let modified_all_added = vecs::ensured_shuffle_keep_first(&delta.all_added);
+        let shuffled_all_added = vecs::ensured_shuffle_keep_first(&delta.all_added);
 
         let mut modified_deposited = old_state.deposited_lido_validator_indices.to_vec().clone();
-        let mut modified_new_indices: Vec<u64> = modified_all_added.iter().map(|v| v.index.to_owned()).collect();
-        modified_deposited.append(&mut modified_new_indices);
+        let mut shuffled_new_lido_deposited_indices: Vec<u64> = shuffled_all_added
+            .iter()
+            .filter_map(|v| {
+                if v.validator.withdrawal_credentials == lido_credentials
+                    && v.validator.status(program_input.bc_slot.epoch()) != ValidatorStatus::FutureDeposit
+                {
+                    Some(v.index)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        modified_deposited.append(&mut shuffled_new_lido_deposited_indices);
 
         let mut new_state = program_input.compute_new_state()?;
         // Self-checks - old and new deposited indices should have the same elements
@@ -416,7 +426,7 @@ mod multi_modifications {
         // ... but the new one should be out of order
         assert!(!is_sorted(&new_state.deposited_lido_validator_indices));
 
-        program_input.validators_and_balances.validators_delta.all_added = modified_all_added;
+        program_input.validators_and_balances.validators_delta.all_added = shuffled_all_added;
         program_input.new_lido_validator_state_hash = new_state.tree_hash_root();
 
         executor.assert_fails_in_prover(program_input).await
@@ -436,10 +446,9 @@ mod program_input {
     #[ignore = "Hits external prover (slow, incurs costs)"]
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_input_refslot_gt_bc_slot() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.reference_slot = ReferenceSlot(program_input.bc_slot.0 + 1);
         let result = executor.run(program_input).await;
@@ -448,11 +457,11 @@ mod program_input {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_input_bc_slot_in_future() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
+
         let latest_header = executor.env.read_beacon_block_header(&StateId::Head).await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.bc_slot = BeaconChainSlot(latest_header.slot + 10);
         executor.assert_fails_in_prover(program_input).await
@@ -461,11 +470,11 @@ mod program_input {
     #[ignore = "Hits external prover (slow, incurs costs)"]
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_input_bc_slot_in_future_with_new_state_hash_update() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
+
         let latest_header = executor.env.read_beacon_block_header(&StateId::Head).await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         let mut new_validator_state = program_input.compute_new_state()?;
 
@@ -494,10 +503,9 @@ mod program_input {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_input_beacon_block_hash_modified_missing() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.beacon_block_hash = test_consts::MISSING_BLOCK_HASH.into();
         executor.assert_fails_in_prover(program_input).await
@@ -505,10 +513,9 @@ mod program_input {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_input_beacon_block_hash_modified_existing() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.beacon_block_hash = test_consts::BLOCK_HASH_6811538.into();
         executor.assert_fails_in_prover(program_input).await
@@ -516,10 +523,9 @@ mod program_input {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_input_beacon_state_hashes() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
 
-        let program_input = executor.prepare_actual_input(target_slot).await?;
+        let program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         for field in BeaconStateFields::all() {
             let mut new_input = program_input.clone();
@@ -531,10 +537,9 @@ mod program_input {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_input_new_lido_validator_state_hash_random() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.new_lido_validator_state_hash = Hash256::random();
         executor.assert_fails_in_prover(program_input).await
@@ -556,25 +561,34 @@ mod vals_and_bals {
 
     mod withdrawal_creds {
         use super::*;
+
+        async fn setup_withdrawal_creds() -> Result<(TestExecutor, BeaconChainSlot)> {
+            let mut env = IntegrationTestEnvironment::default().await?;
+            let target_slot = env.get_finalized_slot().await?;
+            env.apply_standard_adjustments(&target_slot).await?;
+            Ok((TestExecutor::new(env), target_slot))
+        }
+
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_wrong_withdrawal_credentials_naive() -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let (executor, target_slot) = setup_withdrawal_creds().await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_ver(target_slot).await?;
 
             program_input.validators_and_balances.lido_withdrawal_credentials =
                 test_consts::NON_LIDO_CREDENTIALS.into();
+            // self-check
+            let delta = &program_input.validators_and_balances.validators_delta;
+            assert!(!delta.all_added.is_empty() || !delta.lido_changed.is_empty());
             // Fails in creating proof since validators passed in the lido validator state won't pass is_lido check
             executor.assert_fails_in_prover(program_input).await
         }
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_wrong_withdrawal_credentials() -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let (executor, target_slot) = setup_withdrawal_creds().await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_ver(target_slot).await?;
 
             let modified_credentials: Hash256 = test_consts::NON_LIDO_CREDENTIALS.into();
 
@@ -589,10 +603,9 @@ mod vals_and_bals {
         #[ignore = "Hits external prover (slow, incurs costs)"]
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_wrong_withdrawal_credentials_empty_changed() -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let (executor, target_slot) = setup_withdrawal_creds().await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_ver(target_slot).await?;
 
             let modified_credentials: Hash256 = test_consts::NON_LIDO_CREDENTIALS.into();
 
@@ -610,10 +623,9 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_added_balance() -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let (executor, target_slot) = setup_no_adjustments().await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.balances =
                 varlists::append(program_input.validators_and_balances.balances, 123454321);
@@ -622,10 +634,9 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_removed_balance() -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let (executor, target_slot) = setup_no_adjustments().await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.balances =
                 varlists::remove_random(program_input.validators_and_balances.balances);
@@ -634,10 +645,9 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_modified_balance() -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let (executor, target_slot) = setup_no_adjustments().await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.balances =
                 varlists::modify_random(program_input.validators_and_balances.balances, |bal| bal + 250000);
@@ -651,10 +661,9 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_total_validators_higher() -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let (executor, target_slot) = setup_no_adjustments().await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.total_validators += 1;
             executor.assert_fails_in_prover(program_input).await
@@ -662,10 +671,9 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_total_validators_lower() -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let (executor, target_slot) = setup_no_adjustments().await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.total_validators -= 1;
             executor.assert_fails_in_prover(program_input).await
@@ -676,29 +684,10 @@ mod vals_and_bals {
         use super::*;
 
         async fn setup_all_added(target_slot: &BeaconChainSlot) -> Result<TestExecutor> {
-            let mut executor = TestExecutor::default().await?;
-            const NEW_VALIDATOR_COUNT: usize = 5;
-            let old_bs = executor.env.read_beacon_state(&StateId::Slot(DEPLOY_SLOT)).await?;
-            let old_bh = executor
-                .env
-                .read_beacon_block_header(&StateId::Slot(DEPLOY_SLOT))
-                .await?;
-
-            let new_validators = [0; NEW_VALIDATOR_COUNT].map(|_| {
-                validator::make(
-                    executor.env.script_runtime.lido_settings.withdrawal_credentials,
-                    validator::Status::Active(target_slot.epoch()),
-                    validator::DEP_BALANCE,
-                )
-            });
-
-            let (new_bs, new_bh) = Adjuster::start_with(&old_bs, &old_bh)
-                .add_validators(&new_validators, &[0; NEW_VALIDATOR_COUNT])
-                .set_slot(target_slot)
-                .build();
-            executor.env.mock_beacon_state_roots_contract().await?;
-            executor.env.stub_state(&new_bs, &new_bh).await?;
-            Ok(executor)
+            let mut env = IntegrationTestEnvironment::default().await?;
+            let adjustments = env.make_adjustments(target_slot).await?.add_lido_deposited(5);
+            env.apply(adjustments).await?;
+            Ok(TestExecutor::new(env))
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -706,7 +695,7 @@ mod vals_and_bals {
             let target_slot = REPORT_COMPUTE_SLOT + 1;
             let executor = setup_all_added(&target_slot).await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.all_added = vecs::append(
                 program_input.validators_and_balances.validators_delta.all_added,
@@ -728,7 +717,7 @@ mod vals_and_bals {
             let target_slot = REPORT_COMPUTE_SLOT + 1;
             let executor = setup_all_added(&target_slot).await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
             let bs = executor.env.read_beacon_state(&StateId::Slot(target_slot)).await?;
             let target_validator_index = 67;
             let validator = bs.validators[target_validator_index].clone();
@@ -749,7 +738,7 @@ mod vals_and_bals {
             let target_slot = REPORT_COMPUTE_SLOT + 1;
             let executor = setup_all_added(&target_slot).await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.all_added =
                 vecs::duplicate_random(program_input.validators_and_balances.validators_delta.all_added);
@@ -761,7 +750,7 @@ mod vals_and_bals {
             let target_slot = REPORT_COMPUTE_SLOT + 1;
             let executor = setup_all_added(&target_slot).await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
             let lido_creds: Hash256 = executor.env.script_runtime.lido_settings.withdrawal_credentials;
 
             program_input.validators_and_balances.validators_delta.all_added = vecs::modify_random(
@@ -784,7 +773,7 @@ mod vals_and_bals {
             let target_slot = REPORT_COMPUTE_SLOT + 1;
             let executor = setup_all_added(&target_slot).await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.all_added = vecs::modify_random(
                 program_input.validators_and_balances.validators_delta.all_added,
@@ -804,7 +793,7 @@ mod vals_and_bals {
 
             let current_epoch = target_slot.epoch();
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.all_added = vecs::modify_random(
                 program_input.validators_and_balances.validators_delta.all_added,
@@ -824,7 +813,7 @@ mod vals_and_bals {
 
             let current_epoch = target_slot.epoch();
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.all_added = vecs::modify_random(
                 program_input.validators_and_balances.validators_delta.all_added,
@@ -842,7 +831,7 @@ mod vals_and_bals {
             let target_slot = REPORT_COMPUTE_SLOT + 1;
             let executor = setup_all_added(&target_slot).await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.all_added =
                 vecs::remove_random(program_input.validators_and_balances.validators_delta.all_added);
@@ -854,7 +843,7 @@ mod vals_and_bals {
             let target_slot = REPORT_COMPUTE_SLOT + 1;
             let executor = setup_all_added(&target_slot).await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.all_added =
                 vecs::ensured_shuffle_keep_first(&program_input.validators_and_balances.validators_delta.all_added);
@@ -867,7 +856,7 @@ mod vals_and_bals {
             let target_slot = REPORT_COMPUTE_SLOT + 1;
             let executor = setup_all_added(&target_slot).await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
             let old_added = program_input.validators_and_balances.validators_delta.all_added;
 
             program_input.validators_and_balances.validators_delta.all_added =
@@ -878,13 +867,21 @@ mod vals_and_bals {
 
     mod lido_changed {
         use super::*;
+
+        async fn setup_lido_changed(target_slot: &BeaconChainSlot) -> Result<TestExecutor> {
+            let mut env = IntegrationTestEnvironment::default().await?;
+            let adjustments = env.make_adjustments(target_slot).await?.exit_lido(2);
+            env.apply(adjustments).await?;
+            Ok(TestExecutor::new(env))
+        }
+
         /* #region ValidatorDelta.lido_changed */
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_lido_changed_extra() -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let target_slot = REPORT_COMPUTE_SLOT + 1;
+            let executor = setup_lido_changed(&target_slot).await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
             let bs = executor.env.read_beacon_state(&StateId::Slot(target_slot)).await?;
             let target_validator_index = 50;
             let validator = bs.validators[target_validator_index].clone();
@@ -902,10 +899,10 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_lido_changed_modified_creds() -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let target_slot = REPORT_COMPUTE_SLOT + 1;
+            let executor = setup_lido_changed(&target_slot).await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
             let lido_creds: Hash256 = executor.env.script_runtime.lido_settings.withdrawal_credentials;
 
             program_input.validators_and_balances.validators_delta.lido_changed = vecs::modify_random(
@@ -925,10 +922,10 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_lido_changed_modified_index() -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let target_slot = REPORT_COMPUTE_SLOT + 1;
+            let executor = setup_lido_changed(&target_slot).await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.lido_changed = vecs::modify_random(
                 program_input.validators_and_balances.validators_delta.lido_changed,
@@ -944,11 +941,11 @@ mod vals_and_bals {
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_lido_changed_modified_activaion_epoch_past() -> Result<()>
         {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let target_slot = REPORT_COMPUTE_SLOT + 1;
+            let executor = setup_lido_changed(&target_slot).await?;
             let current_epoch = target_slot.epoch();
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.lido_changed = vecs::modify_random(
                 program_input.validators_and_balances.validators_delta.lido_changed,
@@ -964,11 +961,11 @@ mod vals_and_bals {
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_lido_changed_modified_activaion_epoch_future() -> Result<()>
         {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let target_slot = REPORT_COMPUTE_SLOT + 1;
+            let executor = setup_lido_changed(&target_slot).await?;
             let current_epoch = target_slot.epoch();
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.lido_changed = vecs::modify_random(
                 program_input.validators_and_balances.validators_delta.lido_changed,
@@ -983,11 +980,11 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_lido_changed_modified_exit_epoch_past() -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let target_slot = REPORT_COMPUTE_SLOT + 1;
+            let executor = setup_lido_changed(&target_slot).await?;
             let current_epoch = target_slot.epoch();
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.lido_changed = vecs::modify_random(
                 program_input.validators_and_balances.validators_delta.lido_changed,
@@ -1002,11 +999,11 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_lido_changed_modified_exit_epoch_future() -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let target_slot = REPORT_COMPUTE_SLOT + 1;
+            let executor = setup_lido_changed(&target_slot).await?;
             let current_epoch = target_slot.epoch();
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.lido_changed = vecs::modify_random(
                 program_input.validators_and_balances.validators_delta.lido_changed,
@@ -1021,64 +1018,57 @@ mod vals_and_bals {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_lido_changed_duplicated() -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let target_slot = REPORT_COMPUTE_SLOT + 1;
+            let executor = setup_lido_changed(&target_slot).await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.lido_changed =
                 vecs::duplicate_random(program_input.validators_and_balances.validators_delta.lido_changed);
             executor.assert_fails_in_prover(program_input).await
         }
 
-        #[ignore = "Hits external prover (slow, incurs costs)"]
         #[tokio::test(flavor = "multi_thread")]
-        async fn program_input_tampering_vals_and_bals_delta_lido_changed_emptied_old_has_pending_fails_STUB(
-        ) -> Result<()> {
-            // TODO: no old state with pending deposits exists yet.
-            Ok(())
-            // let executor = TestExecutor::default().await?;
-            // let target_slot = executor.env.get_finalized_slot().await?;
-            // let intermediate_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
+        async fn program_input_tampering_vals_and_bals_delta_lido_changed_emptied_old_has_pending_fails() -> Result<()>
+        {
+            let mut env = IntegrationTestEnvironment::default().await?;
+            let adjustments = env.make_adjustments(&DEPLOY_SLOT).await?.add_lido_pending(3);
+            env.apply(adjustments).await?;
+            let executor = TestExecutor::new(env);
 
-            // let mut program_input = executor.prepare_actual_input(intermediate_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(REPORT_COMPUTE_SLOT + 1).await?;
 
-            // program_input.validators_and_balances.validators_delta.lido_changed = vec![];
+            program_input.validators_and_balances.validators_delta.lido_changed = vec![];
 
-            // let result = executor.run(program_input).await;
-            // executor.assert_accepted(result)?;
-
-            // let program_input = executor.prepare_actual_input(target_slot).await?;
-            // let result = executor.run(program_input).await;
-            // executor.assert_accepted(result)
+            executor.assert_fails_in_prover(program_input).await
         }
 
         #[ignore = "Hits external prover (slow, incurs costs)"]
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_lido_changed_emptied_old_no_pending_succeeds_subsequent_correct_succeeds(
         ) -> Result<()> {
-            let executor = TestExecutor::default().await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
-            let intermediate_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
+            let env = IntegrationTestEnvironment::default().await?;
+            let executor = TestExecutor::new(env);
+            let target_slot = REPORT_COMPUTE_SLOT + 1;
 
-            let mut program_input = executor.prepare_actual_input(intermediate_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.lido_changed = vec![];
 
             let result = executor.run(program_input).await;
             executor.assert_accepted(result)?;
 
-            let program_input = executor.prepare_actual_input(target_slot).await?;
+            let program_input = executor.prepare_input_no_ver(target_slot).await?;
             let result = executor.run(program_input).await;
             executor.assert_accepted(result)
         }
 
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_lido_changed_shuffled() -> Result<()> {
-            let executor = TestExecutor::new(test_utils::DEPLOY_SLOT).await?;
-            let target_slot = executor.env.get_finalized_slot().await?;
+            let target_slot = REPORT_COMPUTE_SLOT + 1;
+            let executor = setup_lido_changed(&target_slot).await?;
 
-            let mut program_input = executor.prepare_actual_input(target_slot).await?;
+            let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
             program_input.validators_and_balances.validators_delta.lido_changed =
                 vecs::ensured_shuffle(&program_input.validators_and_balances.validators_delta.lido_changed);
@@ -1115,7 +1105,7 @@ mod old_state {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.old_lido_validator_state.slot -= eth_spec::SlotsPerEpoch::to_u64();
         program_input.old_lido_validator_state.epoch -= 1;
@@ -1128,7 +1118,7 @@ mod old_state {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.old_lido_validator_state.slot -= eth_spec::SlotsPerEpoch::to_u64();
         executor.assert_fails_in_prover(program_input).await
@@ -1139,7 +1129,7 @@ mod old_state {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.old_lido_validator_state.max_validator_index -= 1;
         executor.assert_fails_in_prover(program_input).await
@@ -1150,7 +1140,7 @@ mod old_state {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.old_lido_validator_state.max_validator_index += 1;
         executor.assert_fails_in_prover(program_input).await
@@ -1161,7 +1151,7 @@ mod old_state {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input
             .old_lido_validator_state
@@ -1177,7 +1167,7 @@ mod old_state {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.old_lido_validator_state.deposited_lido_validator_indices =
             varlists::duplicate_random(program_input.old_lido_validator_state.deposited_lido_validator_indices);
@@ -1190,7 +1180,7 @@ mod old_state {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.old_lido_validator_state.deposited_lido_validator_indices =
             varlists::remove_random(program_input.old_lido_validator_state.deposited_lido_validator_indices);
@@ -1201,10 +1191,10 @@ mod old_state {
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_old_state_deposited_shuffle() -> Result<()> {
         // Using alt deploy slot since it has 5 validators
-        let executor = TestExecutor::new(test_utils::DEPLOY_SLOT).await?;
+        let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.old_lido_validator_state.deposited_lido_validator_indices =
             varlists::ensured_shuffle(program_input.old_lido_validator_state.deposited_lido_validator_indices);
@@ -1220,7 +1210,7 @@ mod old_state {
         let target_slot = executor.env.get_finalized_slot().await?;
         let intermediate_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
 
-        let mut program_input = executor.prepare_actual_input(intermediate_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(intermediate_slot).await?;
 
         program_input.old_lido_validator_state.exited_lido_validator_indices = varlists::append(
             program_input.old_lido_validator_state.exited_lido_validator_indices,
@@ -1230,7 +1220,7 @@ mod old_state {
         let result = executor.run(program_input).await;
         executor.assert_accepted(result)?;
 
-        let program_input = executor.prepare_actual_input(target_slot).await?;
+        let program_input = executor.prepare_input_no_ver(target_slot).await?;
         let result = executor.run(program_input).await;
         executor.assert_accepted(result)
     }
@@ -1238,11 +1228,11 @@ mod old_state {
     #[ignore = "Hits external prover (slow, incurs costs)"]
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_old_state_exited_duplicated_accepted_subsequent_report_accepted() -> Result<()> {
-        let executor = TestExecutor::new(test_utils::DEPLOY_SLOT).await?;
+        let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
         let intermediate_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
 
-        let mut program_input = executor.prepare_actual_input(intermediate_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(intermediate_slot).await?;
 
         program_input.old_lido_validator_state.exited_lido_validator_indices =
             varlists::duplicate_random(program_input.old_lido_validator_state.exited_lido_validator_indices);
@@ -1250,7 +1240,7 @@ mod old_state {
         let result = executor.run(program_input).await;
         executor.assert_accepted(result)?;
 
-        let program_input = executor.prepare_actual_input(target_slot).await?;
+        let program_input = executor.prepare_input_no_ver(target_slot).await?;
         let result = executor.run(program_input).await;
         executor.assert_accepted(result)
     }
@@ -1258,11 +1248,11 @@ mod old_state {
     #[ignore = "Hits external prover (slow, incurs costs)"]
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_old_state_exited_removed_accepted_subsequent_report_accepted() -> Result<()> {
-        let executor = TestExecutor::new(test_utils::DEPLOY_SLOT).await?;
+        let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
         let intermediate_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
 
-        let mut program_input = executor.prepare_actual_input(intermediate_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(intermediate_slot).await?;
 
         program_input.old_lido_validator_state.exited_lido_validator_indices =
             varlists::remove_random(program_input.old_lido_validator_state.exited_lido_validator_indices);
@@ -1270,7 +1260,7 @@ mod old_state {
         let result = executor.run(program_input).await;
         executor.assert_accepted(result)?;
 
-        let program_input = executor.prepare_actual_input(target_slot).await?;
+        let program_input = executor.prepare_input_no_ver(target_slot).await?;
         let result = executor.run(program_input).await;
         executor.assert_accepted(result)
     }
@@ -1278,18 +1268,18 @@ mod old_state {
     #[ignore = "Hits external prover (slow, incurs costs)"]
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_old_state_exited_shuffled_accepted_subsequent_report_accepted() -> Result<()> {
-        let executor = TestExecutor::new(test_utils::DEPLOY_SLOT).await?;
+        let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
         let intermediate_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
 
-        let mut program_input = executor.prepare_actual_input(intermediate_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(intermediate_slot).await?;
 
         program_input.old_lido_validator_state.exited_lido_validator_indices =
             varlists::ensured_shuffle(program_input.old_lido_validator_state.exited_lido_validator_indices);
         let result = executor.run(program_input).await;
         executor.assert_accepted(result)?;
 
-        let program_input = executor.prepare_actual_input(target_slot).await?;
+        let program_input = executor.prepare_input_no_ver(target_slot).await?;
         let result = executor.run(program_input).await;
         executor.assert_accepted(result)
     }
@@ -1303,7 +1293,7 @@ mod new_state {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.new_lido_validator_state_hash = Hash256::random();
         executor.assert_fails_in_prover(program_input).await
@@ -1322,10 +1312,11 @@ mod withdrawal_vault {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_withdrawal_vault_wrong_balance() -> Result<()> {
-        let executor = TestExecutor::default().await?;
+        let env = IntegrationTestEnvironment::default().await?;
+        let executor = TestExecutor::new(env);
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.withdrawal_vault_data.balance += alloy_primitives::U256::from(150);
         executor.assert_fails_in_prover(program_input).await
@@ -1336,7 +1327,7 @@ mod withdrawal_vault {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.withdrawal_vault_data.vault_address = test_consts::ANY_RANDOM_ADDRESS.into();
         executor.assert_fails_in_prover(program_input).await
@@ -1347,7 +1338,7 @@ mod withdrawal_vault {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         let old_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
         let old_bs = executor.env.read_beacon_state(&StateId::Slot(old_slot)).await?;
@@ -1372,7 +1363,7 @@ mod withdrawal_vault {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         let bs = executor.env.read_beacon_state(&StateId::Slot(target_slot)).await?;
 
@@ -1404,7 +1395,7 @@ mod exec_payload {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         program_input.latest_execution_header_data.state_root_inclusion_proof = vec![0, 1, 2, 3, 4, 5, 6];
         executor.assert_fails_in_prover(program_input).await
@@ -1415,7 +1406,7 @@ mod exec_payload {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         let old_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
         let old_bs = executor.env.read_beacon_state(&StateId::Slot(old_slot)).await?;
@@ -1429,7 +1420,7 @@ mod exec_payload {
         let executor = TestExecutor::default().await?;
         let target_slot = executor.env.get_finalized_slot().await?;
 
-        let mut program_input = executor.prepare_actual_input(target_slot).await?;
+        let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
 
         let old_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
         let old_bs = executor.env.read_beacon_state(&StateId::Slot(old_slot)).await?;

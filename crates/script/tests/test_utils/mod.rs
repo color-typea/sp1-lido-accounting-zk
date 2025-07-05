@@ -33,8 +33,8 @@ pub mod adjustments {
     use tree_hash::TreeHash;
 
     pub struct Adjuster {
-        beacon_state: BeaconState,
-        block_header: BeaconBlockHeader,
+        pub beacon_state: BeaconState,
+        pub block_header: BeaconBlockHeader,
     }
 
     impl Adjuster {
@@ -45,13 +45,13 @@ pub mod adjustments {
             }
         }
 
-        pub fn set_slot(mut self, slot: &BeaconChainSlot) -> Self {
+        pub fn set_slot(&mut self, slot: &BeaconChainSlot) -> &mut Self {
             self.beacon_state.slot = slot.0;
             self.block_header.slot = slot.0;
             self
         }
 
-        pub fn add_validator(mut self, validator: Validator, balance: u64) -> Self {
+        pub fn add_validator(&mut self, validator: Validator, balance: u64) -> &mut Self {
             self.beacon_state
                 .validators
                 .push(validator)
@@ -60,24 +60,29 @@ pub mod adjustments {
             self
         }
 
-        pub fn add_validators(mut self, validators: &[Validator], balances: &[u64]) -> Self {
+        pub fn add_validators(&mut self, validators: &[Validator], balances: &[u64]) -> &mut Self {
             assert_eq!(
                 validators.len(),
                 balances.len(),
                 "Validators and balances length mismatch"
             );
             for (validator, balance) in validators.iter().zip(balances.iter()) {
-                self = self.add_validator(validator.clone(), *balance);
+                self.add_validator(validator.clone(), *balance);
             }
             self
         }
 
-        pub fn set_validator(mut self, index: usize, validator: Validator) -> Self {
+        pub fn set_validator(&mut self, index: usize, validator: Validator) -> &mut Self {
             self.beacon_state.validators[index] = validator;
             self
         }
 
-        pub fn set_balance(mut self, index: usize, balance: u64) -> Self {
+        pub fn change_validator(&mut self, index: usize, modifier: impl FnOnce(&mut Validator)) -> &mut Self {
+            modifier(&mut self.beacon_state.validators[index]);
+            self
+        }
+
+        pub fn set_balance(&mut self, index: usize, balance: u64) -> &mut Self {
             self.beacon_state.balances[index] = balance;
             self
         }

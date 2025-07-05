@@ -22,11 +22,9 @@ use sp1_lido_accounting_zk_shared::{
 use test_utils::{env::IntegrationTestEnvironment, mark_as_refslot};
 use tree_hash::TreeHash;
 
-use crate::test_utils::{adjustments::Adjuster, validator, DEPLOY_SLOT};
+use crate::test_utils::DEPLOY_SLOT;
 
 type WithdrawalVaultDataMutator = dyn Fn(WithdrawalVaultData) -> WithdrawalVaultData;
-
-const PRINT_VALIDATOR_STATES: bool = true;
 
 #[derive(Debug, thiserror::Error)]
 enum TestError {
@@ -134,17 +132,15 @@ struct TestExecutor {
 }
 
 impl TestExecutor {
-    async fn new(env: IntegrationTestEnvironment) -> anyhow::Result<Self> {
+    fn new(env: IntegrationTestEnvironment) -> Self {
         let bs_reader = Arc::clone(&env.script_runtime.eth_infra.beacon_state_reader);
         let tampered_bs_reader = TamperableBeaconStateReader::new(bs_reader);
 
-        let instance = Self {
+        Self {
             env,
             tampered_bs_reader,
             withdrawal_vault_data_mutator: Box::new(|wvd| wvd),
-        };
-
-        Ok(instance)
+        }
     }
 
     pub fn set_bs_mutator<F>(&mut self, state_id: StateId, update_block_header: bool, mutator: F) -> &mut Self
@@ -327,145 +323,12 @@ Withdrawal vault
 // Flipping this to false should cause all tests to fail generating proof
 const MODIFY_BEACON_BLOCK_HASH: bool = true;
 
-fn create_validators_and_balances(
-    count: usize,
-    withdrawal_credentials: Hash256,
-    status: validator::Status,
-    balance: u64,
-) -> (Vec<Validator>, Vec<u64>) {
-    let validators = (0..count)
-        .map(|_| validator::make(withdrawal_credentials, status.clone(), balance))
-        .collect();
-    let balances = vec![balance; count];
-    (validators, balances)
-}
-
 async fn setup_executor() -> Result<(TestExecutor, BeaconChainSlot)> {
-    tracing_config::setup_logger(tracing_config::LoggingConfig::default());
-    let env = IntegrationTestEnvironment::default().await?;
-    let mut executor = TestExecutor::new(env).await?;
+    let mut env = IntegrationTestEnvironment::default().await?;
+    let target_slot = env.get_finalized_slot().await?;
+    env.apply_standard_adjustments(&target_slot).await?;
 
-    let target_slot = executor.env.get_finalized_slot().await?;
-
-    let lido_credentials: Hash256 = executor.lido_withdrawal_credentials();
-
-    let original_bs = executor.env.read_beacon_state(&StateId::Slot(DEPLOY_SLOT)).await?;
-    let original_bh = executor
-        .env
-        .read_beacon_block_header(&StateId::Slot(DEPLOY_SLOT))
-        .await?;
-
-    // Ensuring we have a diverse set of validators in different states to work with
-    let mut adjuster = Adjuster::start_with(&original_bs, &original_bh).set_slot(&target_slot);
-
-    let existing_validator_indices: Vec<usize> = original_bs
-        .validators
-        .to_vec()
-        .iter()
-        .enumerate()
-        .filter_map(|(index, validator)| {
-            if validator.withdrawal_credentials == lido_credentials {
-                Some(index)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // just cutting a bit of corners, since there are already 6 of them there; but when/if migrating tests to
-    // other chain, might be better just creating them - in that case, similar logic to below should work
-    assert!(
-        existing_validator_indices.len() > 3,
-        "Need to have more than 3 existing validators in the original beacon state"
-    );
-
-    const EXISTING_LIDO_EXITED_COUNT: usize = 2;
-
-    let new_active_lido = create_validators_and_balances(
-        5,
-        lido_credentials,
-        validator::Status::Active(target_slot.epoch()),
-        validator::DEP_BALANCE,
-    );
-
-    let new_pending_lido = create_validators_and_balances(
-        2,
-        lido_credentials,
-        validator::Status::Pending(target_slot.epoch() + 2),
-        0,
-    );
-
-    let new_exited_lido = create_validators_and_balances(
-        2,
-        lido_credentials,
-        validator::Status::Exited {
-            activated: target_slot.epoch() - 2,
-            exited: target_slot.epoch() - 1,
-        },
-        validator::DEP_BALANCE,
-    );
-
-    let new_other = create_validators_and_balances(
-        3,
-        Hash256::random(),
-        validator::Status::Active(target_slot.epoch()),
-        validator::DEP_BALANCE,
-    );
-
-    adjuster = adjuster
-        .add_validators(&new_active_lido.0, &new_active_lido.1)
-        .add_validators(&new_pending_lido.0, &new_pending_lido.1)
-        .add_validators(&new_other.0, &new_other.1)
-        .add_validators(&new_exited_lido.0, &new_exited_lido.1);
-
-    let old_epoch = DEPLOY_SLOT.epoch();
-    let existing_non_exited: Vec<usize> = existing_validator_indices
-        .into_iter()
-        .filter(|index| {
-            let validator = original_bs.validators.get(*index).expect("Must exist");
-            validator.exit_epoch >= old_epoch
-        })
-        .collect();
-
-    // Same, just cutting corners - if this assert fails just need to "artificially" create more exited validators
-    // at the original slot
-    assert!(
-        existing_non_exited.len() > EXISTING_LIDO_EXITED_COUNT,
-        "Need to have more than {EXISTING_LIDO_EXITED_COUNT} existing validators in the original beacon state"
-    );
-
-    for to_exit in existing_non_exited.iter().take(EXISTING_LIDO_EXITED_COUNT) {
-        let old_validator = original_bs.validators.get(*to_exit).expect("Must exist");
-        let mut new_validator = old_validator.clone();
-        new_validator.exit_epoch = target_slot.epoch() - 1;
-        adjuster = adjuster.set_validator(*to_exit, new_validator);
-    }
-
-    let (new_bs, new_bh) = adjuster.build();
-    executor.env.mock_beacon_state_roots_contract().await?;
-    // Since we're mocking beacon state roots, we have to provide old hashes as well
-    executor.env.record_hash(&original_bh).await?;
-    executor.env.stub_state(&new_bs, &new_bh).await?;
-
-    if PRINT_VALIDATOR_STATES {
-        tracing::info!("Lido validators in the new state:");
-        for (index, validator) in new_bs.validators.iter().enumerate() {
-            if index < 1973 {
-                continue;
-            }
-            tracing::info!(
-                "Index: {}, Status: {:?}, Lido?: {}, activation_elig: {}, activation_epoch: {}, exit_epoch: {}",
-                index,
-                validator.status(new_bs.epoch()),
-                validator.is_lido(&lido_credentials),
-                validator.activation_eligibility_epoch,
-                validator.activation_epoch,
-                validator.exit_epoch
-            );
-        }
-    }
-
-    Ok((executor, target_slot))
+    Ok((TestExecutor::new(env), target_slot))
 }
 
 // Note: these tests will hit the prover network - will have relatively longer run

@@ -24,16 +24,18 @@ use sp1_lido_accounting_scripts::{
         },
     },
     sp1_client_wrapper::{SP1ClientWrapper, SP1ClientWrapperImpl},
+    tracing as tracing_config,
 };
 
 use hex_literal::hex;
 use sp1_lido_accounting_zk_shared::{
-    eth_consensus_layer::{BeaconBlockHeader, BeaconState, Hash256},
+    eth_consensus_layer::{BeaconBlockHeader, BeaconState, Hash256, Validator},
     eth_spec,
     io::{
-        eth_io::{BeaconChainSlot, HaveSlotWithBlock},
+        eth_io::{BeaconChainSlot, HaveEpoch, HaveSlotWithBlock},
         program_io::WithdrawalVaultData,
     },
+    lido::ValidatorOps,
 };
 use sp1_sdk::ProverClient;
 use std::{
@@ -46,7 +48,9 @@ use tempfile::TempDir;
 use tree_hash::TreeHash;
 use typenum::Unsigned;
 
-use crate::test_utils::{self, env::BeaconRootsMock::BeaconRootsMockInstance};
+use crate::test_utils::{
+    self, adjustments::Adjuster, env::BeaconRootsMock::BeaconRootsMockInstance, validator, DEPLOY_SLOT,
+};
 use lazy_static::lazy_static;
 
 pub const RETRIES: usize = 3;
@@ -74,6 +78,19 @@ lazy_static! {
     };
 }
 
+fn create_validators_and_balances(
+    count: usize,
+    withdrawal_credentials: Hash256,
+    status: validator::Status,
+    balance: u64,
+) -> (Vec<Validator>, Vec<u64>) {
+    let validators = (0..count)
+        .map(|_| validator::make(withdrawal_credentials, status.clone(), balance))
+        .collect();
+    let balances = vec![balance; count];
+    (validators, balances)
+}
+
 pub struct IntegrationTestEnvironment {
     // When going out of scope, AnvilInstance will terminate the anvil instance it corresponds to,
     // so test env need to assume ownership of anvil instance even if it doesn't use it
@@ -88,6 +105,7 @@ pub struct IntegrationTestEnvironment {
 
 impl IntegrationTestEnvironment {
     pub async fn default() -> anyhow::Result<Self> {
+        tracing_config::setup_logger(tracing_config::LoggingConfig::default());
         Self::new(test_utils::NETWORK.clone(), test_utils::DEPLOY_SLOT).await
     }
 
@@ -418,5 +436,165 @@ impl IntegrationTestEnvironment {
                 current_slot = BeaconChainSlot(current_slot.0 - step);
             }
         }
+    }
+
+    pub async fn make_adjustments(&mut self, target_slot: &BeaconChainSlot) -> anyhow::Result<AdjusterWrapper> {
+        let original_bs = self.read_beacon_state(&StateId::Slot(DEPLOY_SLOT)).await?;
+        let original_bh = self.read_beacon_block_header(&StateId::Slot(DEPLOY_SLOT)).await?;
+
+        // Ensuring we have a diverse set of validators in different states to work with
+        let wrapper = AdjusterWrapper::initialize(
+            &original_bs,
+            &original_bh,
+            self.script_runtime.lido_settings.withdrawal_credentials,
+            *target_slot,
+        );
+
+        self.mock_beacon_state_roots_contract().await?;
+        // Since we're mocking beacon state roots, we have to provide old hashes as well
+        self.record_hash(&original_bh).await?;
+
+        Ok(wrapper)
+    }
+
+    pub async fn apply_standard_adjustments(&mut self, target_slot: &BeaconChainSlot) -> anyhow::Result<()> {
+        let adjustments = self
+            .make_adjustments(target_slot)
+            .await?
+            .add_lido_deposited(5)
+            .add_lido_pending(2)
+            .add_lido_exited(2)
+            .add_other(3)
+            .exit_lido(2);
+
+        self.apply(adjustments).await?;
+        Ok(())
+    }
+
+    pub async fn apply(&self, adjustments: AdjusterWrapper) -> anyhow::Result<()> {
+        let (new_bs, new_bh) = adjustments.build();
+        self.stub_state(&new_bs, &new_bh).await?;
+        Ok(())
+    }
+}
+
+pub struct AdjusterWrapper {
+    adjuster: Adjuster,
+    lido_credentials: Hash256,
+    target_slot: BeaconChainSlot,
+}
+
+impl AdjusterWrapper {
+    pub fn initialize(
+        bs: &BeaconState,
+        bh: &BeaconBlockHeader,
+        lido_credentials: Hash256,
+        target_slot: BeaconChainSlot,
+    ) -> Self {
+        let mut adjuster: Adjuster = Adjuster::start_with(bs, bh);
+        adjuster.set_slot(&target_slot);
+        AdjusterWrapper {
+            adjuster,
+            lido_credentials,
+            target_slot,
+        }
+    }
+
+    fn add_validators(mut self, validators: (Vec<Validator>, Vec<u64>)) -> Self {
+        self.adjuster.add_validators(&validators.0, &validators.1);
+        self
+    }
+
+    fn get_all_lido_indices(&self, validators: &[Validator]) -> Vec<usize> {
+        validators
+            .iter()
+            .enumerate()
+            .filter_map(|(index, validator)| {
+                if validator.withdrawal_credentials == self.lido_credentials {
+                    Some(index)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn beacon_state(&self) -> &BeaconState {
+        &self.adjuster.beacon_state
+    }
+
+    pub fn add_lido_deposited(self, count: usize) -> Self {
+        let validators = create_validators_and_balances(
+            count,
+            self.lido_credentials,
+            validator::Status::Active(self.target_slot.epoch()),
+            validator::DEP_BALANCE,
+        );
+        self.add_validators(validators)
+    }
+
+    pub fn add_lido_pending(self, count: usize) -> Self {
+        let validators = create_validators_and_balances(
+            count,
+            self.lido_credentials,
+            validator::Status::Pending(self.target_slot.epoch() + 2),
+            0,
+        );
+        self.add_validators(validators)
+    }
+
+    pub fn add_lido_exited(self, count: usize) -> Self {
+        let validators = create_validators_and_balances(
+            count,
+            self.lido_credentials,
+            validator::Status::Exited {
+                activated: self.target_slot.epoch() - 2,
+                exited: self.target_slot.epoch() - 1,
+            },
+            validator::DEP_BALANCE,
+        );
+        self.add_validators(validators)
+    }
+
+    pub fn add_other(self, count: usize) -> Self {
+        let validators = create_validators_and_balances(
+            count,
+            Hash256::random(),
+            validator::Status::Active(self.target_slot.epoch()),
+            validator::DEP_BALANCE,
+        );
+        self.add_validators(validators)
+    }
+
+    pub fn exit_lido(mut self, count: usize) -> Self {
+        let bs = self.beacon_state();
+        let validators = bs.validators.to_vec();
+        let existing_validator_indices: Vec<usize> = self.get_all_lido_indices(&validators);
+
+        let old_epoch = bs.epoch();
+        let existing_non_exited: Vec<usize> = existing_validator_indices
+            .into_iter()
+            .filter(|index| {
+                let validator = validators.get(*index).expect("Must exist");
+                validator.exit_epoch >= old_epoch
+            })
+            .collect();
+
+        assert!(
+            existing_non_exited.len() >= count,
+            "Need to have at least {} existing validators, had {:?}",
+            count,
+            existing_non_exited,
+        );
+
+        for to_exit in existing_non_exited.iter().take(count) {
+            self.adjuster
+                .change_validator(*to_exit, |val| val.exit_epoch = self.target_slot.epoch() - 1);
+        }
+        self
+    }
+
+    pub fn build(self) -> (BeaconState, BeaconBlockHeader) {
+        self.adjuster.build()
     }
 }
