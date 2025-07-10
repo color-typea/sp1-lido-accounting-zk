@@ -27,8 +27,8 @@ use tree_hash::TreeHash;
 use typenum::Unsigned;
 
 use test_utils::{
-    adjustments::Adjuster, env::IntegrationTestEnvironment, mark_as_refslot, set_bs_field, validator, varlists, vecs,
-    DEPLOY_SLOT, REPORT_COMPUTE_SLOT,
+    env::IntegrationTestEnvironment, mark_as_refslot, set_bs_field, validator, varlists, vecs, DEPLOY_SLOT,
+    REPORT_COMPUTE_SLOT,
 };
 
 fn equal_in_any_order<T: Eq + std::hash::Hash>(a: &[T], b: &[T]) -> bool {

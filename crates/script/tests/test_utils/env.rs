@@ -6,6 +6,7 @@ use alloy::{
     sol,
 };
 use alloy_primitives::{Address, U256};
+use anyhow::anyhow;
 use sp1_lido_accounting_scripts::{
     beacon_state_reader::{
         file::FileBeaconStateWriter, reqwest::CachedReqwestBeaconStateReader, BeaconStateReader, StateId,
@@ -29,7 +30,7 @@ use sp1_lido_accounting_scripts::{
 
 use hex_literal::hex;
 use sp1_lido_accounting_zk_shared::{
-    eth_consensus_layer::{BeaconBlockHeader, BeaconState, Hash256, Validator},
+    eth_consensus_layer::{BeaconBlockHeader, BeaconState, Hash256, Slot, Validator},
     eth_spec,
     io::{
         eth_io::{BeaconChainSlot, HaveEpoch, HaveSlotWithBlock},
@@ -47,14 +48,12 @@ use tempfile::TempDir;
 use tree_hash::TreeHash;
 use typenum::Unsigned;
 
-use crate::test_utils::{
-    self, adjustments::Adjuster, env::BeaconRootsMock::BeaconRootsMockInstance, validator, DEPLOY_SLOT,
-};
+use crate::test_utils::{self, adjustments::Adjuster, validator, DEPLOY_SLOT};
 use lazy_static::lazy_static;
 
 pub const RETRIES: usize = 3;
 const SUPPRESS_LOGS: bool = false;
-const FORWARD_ANVIL_LOGS: bool = SUPPRESS_LOGS && false;
+const FORWARD_ANVIL_LOGS: bool = !SUPPRESS_LOGS && false;
 
 sol!(
     #[allow(missing_docs)]
@@ -105,10 +104,7 @@ pub struct IntegrationTestEnvironment {
 
 impl IntegrationTestEnvironment {
     pub async fn default() -> anyhow::Result<Self> {
-        if !SUPPRESS_LOGS {
-            tracing_config::setup_logger(tracing_config::LoggingConfig::default());
-        }
-        Self::new(test_utils::NETWORK.clone(), test_utils::DEPLOY_SLOT).await
+        Self::new(test_utils::NETWORK.clone(), test_utils::DEPLOY_SLOT, None).await
     }
 
     fn parse_envs() -> anyhow::Result<(PathBuf, String, String, String, Address, Address)> {
@@ -171,7 +167,15 @@ impl IntegrationTestEnvironment {
         Ok(anvil)
     }
 
-    pub async fn new(network: WrappedNetwork, deploy_slot: BeaconChainSlot) -> anyhow::Result<Self> {
+    pub async fn new(
+        network: WrappedNetwork,
+        deploy_slot: BeaconChainSlot,
+        fork_bs_slot: Option<BeaconChainSlot>,
+    ) -> anyhow::Result<Self> {
+        if !SUPPRESS_LOGS {
+            tracing_config::setup_logger(tracing_config::LoggingConfig::default());
+        }
+
         let (file_store_location, rpc_endpoint, bs_endpoint, fork_url, verifier_address, hash_consensus_address) =
             Self::parse_envs()?;
         let temp_bs_folder = TempDir::new()?;
@@ -187,19 +191,16 @@ impl IntegrationTestEnvironment {
         let file_writer =
             FileBeaconStateWriter::new(temp_bs_folder_path, METRICS.services.beacon_state_client.clone())?;
 
-        let target_slot = Self::finalized_slot(Arc::clone(&beacon_state_reader)).await?;
-        let finalized_bs =
-            Self::read_latest_bs_at_or_before(Arc::clone(&beacon_state_reader), target_slot, RETRIES).await?;
+        let bs_slot_fork = match fork_bs_slot {
+            Some(bc_slot) => bc_slot,
+            None => Self::finalized_slot(Arc::clone(&beacon_state_reader)).await?,
+        };
 
-        let fork_block_number = finalized_bs.latest_execution_payload_header.block_number + 2;
-        tracing::info!(
-            "Target slot: {}, finalized slot: {}, EL block number: {}",
-            target_slot,
-            finalized_bs.slot,
-            finalized_bs.latest_execution_payload_header.block_number
-        );
+        let fork_block_bs =
+            Self::read_latest_bs_at_or_before(Arc::clone(&beacon_state_reader), bs_slot_fork, RETRIES).await?;
+        let fork_el_block = fork_block_bs.latest_execution_payload_header.block_number + 2;
 
-        let anvil = Self::start_anvil(fork_url, fork_block_number, FORWARD_ANVIL_LOGS).await?;
+        let anvil = Self::start_anvil(fork_url, fork_el_block, FORWARD_ANVIL_LOGS).await?;
 
         tracing::info!("Initializing Eth client");
         let provider = Arc::new(ProviderFactory::create_provider(
@@ -326,34 +327,48 @@ impl IntegrationTestEnvironment {
         self.file_writer.write_beacon_state(beacon_state)?;
         self.file_writer.write_beacon_block_header(block_header)?;
 
-        self.record_hash(block_header).await?;
+        self.record_beacon_block_header(block_header).await?;
         Ok(())
     }
 
-    async fn set_block_hash(
-        &self,
-        beacon_roots_mock: &BeaconRootsMockInstance<Arc<DefaultProvider>>,
-        timestamp: U256,
-        hash: Hash256,
-    ) -> anyhow::Result<Hash256> {
-        let set_root_tx = beacon_roots_mock
-            .setRoot(timestamp, hash)
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+    async fn set_block_hash(&self, timestamp: U256, hash: Hash256) -> anyhow::Result<Hash256> {
+        if let Some(beacon_roots_mock) = &self.beacon_roots_mock {
+            let set_root_tx = beacon_roots_mock
+                .setRoot(timestamp, hash)
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
 
-        tracing::debug!("Stubbed hash, {hash:#?} for timestamp {timestamp} at {set_root_tx:#?}");
+            tracing::warn!(
+                "Stubbed hash, {hash:#?} for timestamp {timestamp} at {:#?}",
+                set_root_tx.transaction_hash
+            );
 
-        let recorded = beacon_roots_mock.beacon_block_hashes(timestamp).call().await?;
+            let recorded = beacon_roots_mock.beacon_block_hashes(timestamp).call().await?;
 
-        Ok(recorded)
+            Ok(recorded)
+        } else {
+            panic!("BeaconRootsMock is not initialized, skipping setting block hash");
+        }
     }
 
-    pub async fn record_hash(&self, block_header: &BeaconBlockHeader) -> anyhow::Result<()> {
-        if let Some(beacon_roots_mock) = &self.beacon_roots_mock {
-            let slot = block_header.slot;
+    pub async fn record_beacon_block_header(&self, block_header: &BeaconBlockHeader) -> anyhow::Result<()> {
+        let block_hash = block_header.tree_hash_root();
+        self.record_beacon_block_hash(block_header.slot, block_hash)
+            .await
+            .inspect(|_v| {
+                tracing::info!(
+                    "Stubbed state for slot {}, block_root: {:#?}, state_root: {:#?}",
+                    block_header.slot,
+                    block_hash,
+                    block_header.state_root
+                )
+            })
+    }
 
+    pub async fn record_beacon_block_hash(&self, slot: Slot, beacon_block_hash: Hash256) -> anyhow::Result<()> {
+        if let Some(beacon_roots_mock) = &self.beacon_roots_mock {
             let timestamp_for_block_exists_check =
                 U256::from(self.network_config().genesis_block_timestamp + (slot * eth_spec::SecondsPerSlot::to_u64()));
 
@@ -362,7 +377,6 @@ impl IntegrationTestEnvironment {
                 self.network_config().genesis_block_timestamp + ((slot + 1) * eth_spec::SecondsPerSlot::to_u64()),
             );
 
-            let beacon_block_hash = block_header.tree_hash_root();
             tracing::debug!("Stubbing block hash for {slot}@{timestamp_for_get_block_hash} = {beacon_block_hash:#?}");
 
             let hash_at_block_timestamp = beacon_roots_mock
@@ -372,24 +386,19 @@ impl IntegrationTestEnvironment {
 
             let block_exists = hash_at_block_timestamp != [0; 32];
             if !block_exists {
-                let any_hash = beacon_block_hash; // but any other would do, except all-zeroes
-                self.set_block_hash(beacon_roots_mock, timestamp_for_block_exists_check, any_hash)
+                self.set_block_hash(timestamp_for_block_exists_check, test_utils::NONZERO_HASH.into())
                     .await?;
             }
 
             let recorded = self
-                .set_block_hash(beacon_roots_mock, timestamp_for_get_block_hash, beacon_block_hash)
+                .set_block_hash(timestamp_for_get_block_hash, beacon_block_hash)
                 .await?;
 
-            tracing::info!(
-                "Stubbed state for slot {slot}, block_root: {:#?}, state_root: {:#?}",
-                beacon_block_hash,
-                block_header.state_root,
-            );
-
             tracing::info!("Recorded hash for slot {slot}, {recorded:#?}");
+            Ok(())
+        } else {
+            Err(anyhow!("BeaconRootsMock is not initialized"))
         }
-        Ok(())
     }
 
     pub async fn mock_beacon_state_roots_contract(&mut self) -> anyhow::Result<()> {
@@ -421,7 +430,7 @@ impl IntegrationTestEnvironment {
         Ok(())
     }
 
-    pub async fn read_latest_bs_at_or_before(
+    async fn read_latest_bs_at_or_before(
         bs_reader: Arc<impl BeaconStateReader>,
         slot: BeaconChainSlot,
         retries: usize,
@@ -461,7 +470,7 @@ impl IntegrationTestEnvironment {
             self.mock_beacon_state_roots_contract().await?;
         }
         // Since we're mocking beacon state roots, we have to provide old hashes as well
-        self.record_hash(&original_bh).await?;
+        self.record_beacon_block_header(&original_bh).await?;
 
         Ok(wrapper)
     }

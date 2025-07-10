@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 use anyhow::anyhow;
+use hex_literal::hex;
 use sp1_lido_accounting_scripts::consts::{Network, WrappedNetwork};
 use sp1_lido_accounting_zk_shared::eth_consensus_layer::{BeaconStateFields, BeaconStatePrecomputedHashes, Hash256};
 use sp1_lido_accounting_zk_shared::io::eth_io::{BeaconChainSlot, ReferenceSlot};
@@ -9,8 +10,10 @@ pub mod files;
 
 pub static NETWORK: WrappedNetwork = WrappedNetwork::Anvil(Network::Sepolia);
 pub const DEPLOY_SLOT: BeaconChainSlot = BeaconChainSlot(7643456);
-
 pub const REPORT_COMPUTE_SLOT: BeaconChainSlot = BeaconChainSlot(7998592);
+
+pub const ZERO_HASH: [u8; 32] = [0; 32];
+pub const NONZERO_HASH: [u8; 32] = hex!("0101010101010101010101010101010101010101010101010101010101010101");
 
 pub fn eyre_to_anyhow(err: eyre::Error) -> anyhow::Error {
     anyhow!("Eyre error: {:#?}", err)

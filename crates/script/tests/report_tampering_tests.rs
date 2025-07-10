@@ -48,7 +48,14 @@ struct TestExecutor<M: Fn(PublicValuesRust) -> PublicValuesRust> {
 
 impl<M: Fn(PublicValuesRust) -> PublicValuesRust> TestExecutor<M> {
     async fn new(tamper_public_values: M) -> Result<Self> {
-        let env = IntegrationTestEnvironment::default().await?;
+        let mut env = IntegrationTestEnvironment::new(
+            test_utils::NETWORK.clone(),
+            test_utils::DEPLOY_SLOT,
+            Some(test_utils::REPORT_COMPUTE_SLOT),
+        )
+        .await?;
+        env.mock_beacon_state_roots_contract().await?;
+
         let instance = Self {
             env,
             tamper_public_values,
@@ -65,8 +72,18 @@ impl<M: Fn(PublicValuesRust) -> PublicValuesRust> TestExecutor<M> {
         let lido_withdrawal_credentials: Hash256 = self.env.script_runtime.lido_settings.withdrawal_credentials;
         let stored_proof = self.get_stored_proof()?;
 
+        assert_eq!(
+            stored_proof.metadata.bc_slot,
+            test_utils::REPORT_COMPUTE_SLOT,
+            "Stored proof metadata slot does not match expected report compute slot"
+        );
+
         let reference_slot = stored_proof.report.reference_slot;
         let bc_slot = stored_proof.metadata.bc_slot;
+
+        self.env
+            .record_beacon_block_hash(bc_slot.0, stored_proof.metadata.beacon_block_hash.into())
+            .await?;
 
         let previous_slot = self
             .env

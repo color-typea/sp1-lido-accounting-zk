@@ -8,7 +8,6 @@ use sp1_lido_accounting_scripts::{
     eth_client::{self, Sp1LidoAccountingReportContract::Sp1LidoAccountingReportContractErrors},
     scripts::{prelude::BeaconStateReaderEnum, shared as shared_logic},
     sp1_client_wrapper::{self, SP1ClientWrapper},
-    tracing as tracing_config,
 };
 
 use sp1_lido_accounting_zk_shared::{

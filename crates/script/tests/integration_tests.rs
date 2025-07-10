@@ -97,7 +97,7 @@ async fn two_submission_success() -> Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn non_latest_state_success() -> Result<()> {
     let deploy_slot = DEPLOY_SLOT;
-    let env = IntegrationTestEnvironment::new(test_utils::NETWORK.clone(), deploy_slot).await?;
+    let env = IntegrationTestEnvironment::new(test_utils::NETWORK.clone(), deploy_slot, None).await?;
     let finalized_slot = env.get_finalized_slot().await?;
     let intermediate_slot: BeaconChainSlot = finalized_slot - eth_spec::SlotsPerEpoch::to_u64();
 
@@ -127,7 +127,7 @@ async fn non_latest_state_success() -> Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn resubmit_success() -> Result<()> {
     let deploy_slot = DEPLOY_SLOT;
-    let env = IntegrationTestEnvironment::new(test_utils::NETWORK.clone(), deploy_slot).await?;
+    let env = IntegrationTestEnvironment::new(test_utils::NETWORK.clone(), deploy_slot, None).await?;
     let finalized_slot = env.get_finalized_slot().await?;
 
     scripts::submit::run(
