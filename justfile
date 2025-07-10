@@ -134,11 +134,11 @@ test_program:
 # many in parallel, consuming all the memory and grinding to a halt)
 [working-directory: 'crates/script']
 test_script:
-    SP1_SKIP_PROGRAM_BUILD=true RUST_LOG=warn cargo test -j 5 -- --test-threads=5
+    SP1_SKIP_PROGRAM_BUILD=true RUST_LOG=info cargo test -j 5 -- --test-threads=5
 
 [working-directory: 'crates/script']
 integration_test:
-    SP1_SKIP_PROGRAM_BUILD=true RUST_LOG=warn cargo test -j 5 -- --test-threads 5 --include-ignored 2>&1 > test.log
+    SP1_SKIP_PROGRAM_BUILD=true RUST_LOG=info cargo test -j 5 -- --test-threads 5 --include-ignored 2>&1 | tee test.log
 
 test: test_contracts test_shared test_script
 
