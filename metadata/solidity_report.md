@@ -51,8 +51,8 @@ Source Units in Scope: **`3`** (**100%**)
 | ---- | ------ | --------------- | ---------- | ----- | ------ | ----- | ------------- | -------------- | ------------ | 
 | 🔍 | contracts/src/ISecondOpinionOracle.sol | **** | 1 | 16 | 6 | 3 | 2 | 3 | **** |
 | 📝 | contracts/src/PausableUntil.sol | 1 | **** | 102 | 102 | 72 | 14 | 32 | **** |
-| 📝 | contracts/src/Sp1LidoAccountingReportContract.sol | 1 | **** | 380 | 361 | 237 | 67 | 115 | **<abbr title='Unchecked Blocks'>Σ</abbr>** |
-| 📝🔍 | **Totals** | **2** | **1** | **498**  | **469** | **312** | **83** | **150** | **<abbr title='Unchecked Blocks'>Σ</abbr>** |
+| 📝 | contracts/src/Sp1LidoAccountingReportContract.sol | 1 | **** | 391 | 372 | 245 | 69 | 119 | **<abbr title='TryCatch Blocks'>♻️</abbr><abbr title='Unchecked Blocks'>Σ</abbr>** |
+| 📝🔍 | **Totals** | **2** | **1** | **509**  | **480** | **320** | **85** | **154** | **<abbr title='TryCatch Blocks'>♻️</abbr><abbr title='Unchecked Blocks'>Σ</abbr>** |
 
 <sub>
 Legend: <a onclick="toggleVisibility('table-legend', this)">[➕]</a>
@@ -179,7 +179,7 @@ This section lists functions that are explicitly declared public or payable. Ple
 
 | ♻️ TryCatch | Σ Unchecked |
 | ---------- | ----------- |
-| **** | `yes` |
+| `yes` | `yes` |
 
 #### <span id=t-package-imports>Dependencies / External Imports</span>
 
@@ -247,7 +247,7 @@ This section lists functions that are explicitly declared public or payable. Ple
 |-------------|--------------|
 | contracts/src/ISecondOpinionOracle.sol | aae4a41a136aa0bae4c90f868431f5863f86ddad |
 | contracts/src/PausableUntil.sol | f384a4a37d3c1cd3311fce52acb734d3515df644 |
-| contracts/src/Sp1LidoAccountingReportContract.sol | 8795a1e3ddc0f9b0809a7bbf110e3a557580156b |
+| contracts/src/Sp1LidoAccountingReportContract.sol | ca40f4304330c119c9a8021838a95d90dddacaca |
 
 
  Contracts Description Table
