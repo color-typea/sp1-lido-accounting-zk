@@ -8,9 +8,8 @@ use anyhow::{anyhow, Result};
 use rand::seq::IteratorRandom;
 use sp1_lido_accounting_scripts::scripts::shared::{self as shared_logic, compute_validators_and_balances_test_public};
 use sp1_lido_accounting_scripts::{
-    beacon_state_reader::StateId,
-    eth_client::{self, Sp1LidoAccountingReportContract::Sp1LidoAccountingReportContractErrors},
-    sp1_client_wrapper::{self, SP1ClientWrapper},
+    beacon_state_reader::StateId, eth_client::Sp1LidoAccountingReportContract::Sp1LidoAccountingReportContractErrors,
+    sp1_client_wrapper::SP1ClientWrapper,
 };
 
 use sp1_lido_accounting_zk_shared::eth_consensus_layer::BeaconStateFields;
@@ -27,8 +26,8 @@ use tree_hash::TreeHash;
 use typenum::Unsigned;
 
 use test_utils::{
-    env::IntegrationTestEnvironment, mark_as_refslot, set_bs_field, validator, varlists, vecs, DEPLOY_SLOT,
-    REPORT_COMPUTE_SLOT,
+    env::IntegrationTestEnvironment, mark_as_refslot, set_bs_field, validator, varlists, vecs, TestAssertions,
+    TestError, DEPLOY_SLOT, REPORT_COMPUTE_SLOT,
 };
 
 fn equal_in_any_order<T: Eq + std::hash::Hash>(a: &[T], b: &[T]) -> bool {
@@ -51,27 +50,6 @@ mod test_consts {
 
     pub const MISSING_BLOCK_HASH: [u8; 32] = hex!("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
     pub const BLOCK_HASH_6811538: [u8; 32] = hex!("d7e211537258f4c3c7b79724808ae5d0ad0c25ab4b082685a70844925554aad2");
-}
-
-#[derive(Debug, thiserror::Error)]
-enum TestError {
-    #[error("Proof rejected for a known reason {0:?}")]
-    ContractRejected(Sp1LidoAccountingReportContractErrors),
-    #[error("Proof rejected for other reason {0:?}")]
-    OtherRejection(eth_client::ContractError),
-    #[error("Failed obtaining the proof {0:?}")]
-    ProofFailed(#[from] sp1_client_wrapper::Error),
-    #[error("Other {0:?}")]
-    Other(#[from] anyhow::Error),
-}
-
-impl From<eth_client::ContractError> for TestError {
-    fn from(value: eth_client::ContractError) -> Self {
-        match value {
-            eth_client::ContractError::Rejection(e) => TestError::ContractRejected(e),
-            other => TestError::OtherRejection(other),
-        }
-    }
 }
 
 struct TestExecutor {
@@ -164,24 +142,6 @@ impl TestExecutor {
             .await?;
         Ok(())
     }
-
-    pub fn assert_rejected(&self, result: Result<(), TestError>) -> anyhow::Result<()> {
-        match result {
-            Err(TestError::ContractRejected(err)) => {
-                tracing::info!("As expected, contract rejected {:#?}", err);
-                Ok(())
-            }
-            Err(other_error) => Err(anyhow!("Other error {:#?}", other_error)),
-            Ok(_txhash) => Err(anyhow!("Report accepted")),
-        }
-    }
-
-    pub fn assert_accepted(&self, result: Result<(), TestError>) -> anyhow::Result<()> {
-        match result {
-            Err(other_error) => Err(anyhow!("Error {:#?}", other_error)),
-            Ok(_) => Ok(()),
-        }
-    }
 }
 
 async fn setup_no_adjustments() -> Result<(TestExecutor, BeaconChainSlot)> {
@@ -208,7 +168,7 @@ mod self_check {
 
         let program_input = executor.prepare_input_no_ver(target_slot).await?;
         let result = executor.run(program_input).await;
-        executor.assert_accepted(result)
+        TestAssertions::assert_accepted(result)
     }
 }
 
@@ -229,7 +189,9 @@ mod stale_data {
 
         program_input.reference_slot -= 1;
         let result = executor.run(program_input).await;
-        executor.assert_rejected(result)
+        TestAssertions::assert_rejected_with(result, |e| {
+            matches!(e, Sp1LidoAccountingReportContractErrors::IllegalReferenceSlotError(_))
+        })
     }
 
     #[ignore = "Hits external prover (slow, incurs costs)"]
@@ -241,7 +203,9 @@ mod stale_data {
 
         program_input.reference_slot += 1;
         let result = executor.run(program_input).await;
-        executor.assert_rejected(result)
+        TestAssertions::assert_rejected_with(result, |e| {
+            matches!(e, Sp1LidoAccountingReportContractErrors::IllegalReferenceSlotError(_))
+        })
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -325,7 +289,9 @@ mod multi_modifications {
         update_program_input(&mut program_input, bs, old_bs, &other_credentials, |bs| bs);
 
         let result = executor.run(program_input).await;
-        executor.assert_rejected(result)
+        TestAssertions::assert_rejected_with(result, |e| {
+            matches!(e, Sp1LidoAccountingReportContractErrors::VerificationError(_))
+        })
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -450,7 +416,9 @@ mod program_input {
 
         program_input.reference_slot = ReferenceSlot(program_input.bc_slot.0 + 1);
         let result = executor.run(program_input).await;
-        executor.assert_rejected(result)
+        TestAssertions::assert_rejected_with(result, |e| {
+            matches!(e, Sp1LidoAccountingReportContractErrors::IllegalReferenceSlotError(_))
+        })
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -496,7 +464,9 @@ mod program_input {
 
         program_input.new_lido_validator_state_hash = new_validator_state.tree_hash_root();
         let result = executor.run(program_input).await;
-        executor.assert_rejected(result)
+        TestAssertions::assert_rejected_with(result, |e| {
+            matches!(e, Sp1LidoAccountingReportContractErrors::IllegalReferenceSlotError(_))
+        })
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -612,7 +582,9 @@ mod vals_and_bals {
             program_input.new_lido_validator_state_hash = program_input.compute_new_state()?.tree_hash_root();
             let result = executor.run(program_input).await;
             // With these manipulations, it successfully generates the proof, but got rejected in the contract
-            executor.assert_rejected(result)
+            TestAssertions::assert_rejected_with(result, |e| {
+                matches!(e, Sp1LidoAccountingReportContractErrors::VerificationError(_))
+            })
         }
     }
 
@@ -1049,20 +1021,18 @@ mod vals_and_bals {
         #[tokio::test(flavor = "multi_thread")]
         async fn program_input_tampering_vals_and_bals_delta_lido_changed_emptied_old_no_pending_succeeds_subsequent_correct_succeeds(
         ) -> Result<()> {
-            let env = IntegrationTestEnvironment::default().await?;
-            let executor = TestExecutor::new(env);
-            let target_slot = REPORT_COMPUTE_SLOT + 1;
+            let (executor, target_slot) = setup_no_adjustments().await?;
 
+            tracing::info!("Running program input with empty lido_changed");
             let mut program_input = executor.prepare_input_no_ver(target_slot).await?;
-
             program_input.validators_and_balances.validators_delta.lido_changed = vec![];
-
             let result = executor.run(program_input).await;
-            executor.assert_accepted(result)?;
+            TestAssertions::assert_accepted(result)?;
 
+            tracing::info!("Running program input without manipulations");
             let program_input = executor.prepare_input_no_ver(target_slot).await?;
             let result = executor.run(program_input).await;
-            executor.assert_accepted(result)
+            TestAssertions::assert_accepted(result)
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -1112,7 +1082,9 @@ mod old_state {
         program_input.old_lido_validator_state.slot -= eth_spec::SlotsPerEpoch::to_u64();
         program_input.old_lido_validator_state.epoch -= 1;
         let result = executor.run(program_input).await;
-        executor.assert_rejected(result)
+        TestAssertions::assert_rejected_with(result, |e| {
+            matches!(e, Sp1LidoAccountingReportContractErrors::VerificationError(_))
+        })
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1208,8 +1180,7 @@ mod old_state {
     #[ignore = "Hits external prover (slow, incurs costs)"]
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_old_state_exited_add_new_accepted_subsequent_report_accepted() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
         let intermediate_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
 
         let mut program_input = executor.prepare_input_no_ver(intermediate_slot).await?;
@@ -1220,18 +1191,17 @@ mod old_state {
         );
 
         let result = executor.run(program_input).await;
-        executor.assert_accepted(result)?;
+        TestAssertions::assert_accepted(result)?;
 
         let program_input = executor.prepare_input_no_ver(target_slot).await?;
         let result = executor.run(program_input).await;
-        executor.assert_accepted(result)
+        TestAssertions::assert_accepted(result)
     }
 
     #[ignore = "Hits external prover (slow, incurs costs)"]
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_old_state_exited_duplicated_accepted_subsequent_report_accepted() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
         let intermediate_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
 
         let mut program_input = executor.prepare_input_no_ver(intermediate_slot).await?;
@@ -1240,18 +1210,17 @@ mod old_state {
             varlists::duplicate_random(program_input.old_lido_validator_state.exited_lido_validator_indices);
 
         let result = executor.run(program_input).await;
-        executor.assert_accepted(result)?;
+        TestAssertions::assert_accepted(result)?;
 
         let program_input = executor.prepare_input_no_ver(target_slot).await?;
         let result = executor.run(program_input).await;
-        executor.assert_accepted(result)
+        TestAssertions::assert_accepted(result)
     }
 
     #[ignore = "Hits external prover (slow, incurs costs)"]
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_old_state_exited_removed_accepted_subsequent_report_accepted() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
         let intermediate_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
 
         let mut program_input = executor.prepare_input_no_ver(intermediate_slot).await?;
@@ -1260,18 +1229,17 @@ mod old_state {
             varlists::remove_random(program_input.old_lido_validator_state.exited_lido_validator_indices);
 
         let result = executor.run(program_input).await;
-        executor.assert_accepted(result)?;
+        TestAssertions::assert_accepted(result)?;
 
         let program_input = executor.prepare_input_no_ver(target_slot).await?;
         let result = executor.run(program_input).await;
-        executor.assert_accepted(result)
+        TestAssertions::assert_accepted(result)
     }
 
     #[ignore = "Hits external prover (slow, incurs costs)"]
     #[tokio::test(flavor = "multi_thread")]
     async fn program_input_tampering_old_state_exited_shuffled_accepted_subsequent_report_accepted() -> Result<()> {
-        let executor = TestExecutor::default().await?;
-        let target_slot = executor.env.get_finalized_slot().await?;
+        let (executor, target_slot) = setup_no_adjustments().await?;
         let intermediate_slot = target_slot - eth_spec::SlotsPerEpoch::to_u64();
 
         let mut program_input = executor.prepare_input_no_ver(intermediate_slot).await?;
@@ -1279,11 +1247,11 @@ mod old_state {
         program_input.old_lido_validator_state.exited_lido_validator_indices =
             varlists::ensured_shuffle(program_input.old_lido_validator_state.exited_lido_validator_indices);
         let result = executor.run(program_input).await;
-        executor.assert_accepted(result)?;
+        TestAssertions::assert_accepted(result)?;
 
         let program_input = executor.prepare_input_no_ver(target_slot).await?;
         let result = executor.run(program_input).await;
-        executor.assert_accepted(result)
+        TestAssertions::assert_accepted(result)
     }
 }
 
@@ -1382,7 +1350,9 @@ mod withdrawal_vault {
 
         program_input.withdrawal_vault_data = updated_vault_data;
         let result = executor.run(program_input).await;
-        executor.assert_rejected(result)
+        TestAssertions::assert_rejected_with(result, |e| {
+            matches!(e, Sp1LidoAccountingReportContractErrors::VerificationError(_))
+        })
     }
 }
 

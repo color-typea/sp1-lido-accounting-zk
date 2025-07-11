@@ -2,6 +2,8 @@
 use anyhow::anyhow;
 use hex_literal::hex;
 use sp1_lido_accounting_scripts::consts::{Network, WrappedNetwork};
+use sp1_lido_accounting_scripts::eth_client::Sp1LidoAccountingReportContract::Sp1LidoAccountingReportContractErrors;
+use sp1_lido_accounting_scripts::{eth_client, sp1_client_wrapper};
 use sp1_lido_accounting_zk_shared::eth_consensus_layer::{BeaconStateFields, BeaconStatePrecomputedHashes, Hash256};
 use sp1_lido_accounting_zk_shared::io::eth_io::{BeaconChainSlot, ReferenceSlot};
 
@@ -343,5 +345,79 @@ pub mod varlists {
     ) -> VariableList<Elem, Size> {
         let as_vec = input.to_vec();
         vecs::ensured_shuffle_keep_first(&as_vec).into()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TestError {
+    #[error("Proof rejected for known reason {0:?}")]
+    ContractRejected(Sp1LidoAccountingReportContractErrors),
+    #[error("Proof rejected for other reasons {0:?}")]
+    OtherRejection(eth_client::ContractError),
+    #[error("Failed to build proof {0:?}")]
+    ProofFailed(sp1_client_wrapper::Error),
+    #[error("Other eyre error {0:?}")]
+    OtherEyre(#[from] eyre::Error),
+    #[error("Other anyhow error {0:?}")]
+    OtherAnyhow(#[from] anyhow::Error),
+}
+
+impl From<eth_client::ContractError> for TestError {
+    fn from(value: eth_client::ContractError) -> Self {
+        match value {
+            eth_client::ContractError::Rejection(e) => TestError::ContractRejected(e),
+            other => TestError::OtherRejection(other),
+        }
+    }
+}
+
+pub struct TestAssertions;
+impl TestAssertions {
+    pub fn assert_accepted<T>(result: Result<T, TestError>) -> anyhow::Result<()> {
+        match result {
+            Ok(_) => {
+                tracing::info!("As expected, contract accepted");
+                Ok(())
+            }
+            Err(TestError::ContractRejected(err)) => Err(anyhow!("Contract rejected {:#?}", err)),
+            Err(other_error) => Err(anyhow!("Other error {:#?}", other_error)),
+        }
+    }
+
+    pub fn assert_rejected<T>(result: Result<T, TestError>) -> anyhow::Result<()> {
+        match result {
+            Err(TestError::ContractRejected(err)) => {
+                tracing::info!("As expected, contract rejected {:#?}", err);
+                Ok(())
+            }
+            Err(other_error) => Err(anyhow!("Other error {:#?}", other_error)),
+            Ok(_txhash) => Err(anyhow!("Report accepted")),
+        }
+    }
+
+    pub fn assert_rejected_with<T, F>(result: Result<T, TestError>, check: F) -> anyhow::Result<()>
+    where
+        F: FnOnce(&Sp1LidoAccountingReportContractErrors) -> bool,
+    {
+        match result {
+            Err(TestError::ContractRejected(ref err)) if check(err) => {
+                tracing::info!("As expected, contract rejected {:#?}", err);
+                Ok(())
+            }
+            Err(TestError::ContractRejected(err)) => Err(anyhow!("Unexpected rejection type: {:#?}", err)),
+            Err(other_error) => Err(anyhow!("Other error {:#?}", other_error)),
+            Ok(_) => Err(anyhow!("Expected rejection, but got acceptance")),
+        }
+    }
+
+    pub fn assert_failed_proof<T>(result: Result<T, TestError>) -> anyhow::Result<()> {
+        match result {
+            Err(TestError::ProofFailed(e)) => {
+                tracing::info!("Failed to create proof - as expected: {:?}", e);
+                Ok(())
+            }
+            Err(other_error) => Err(anyhow!("Other error {:#?}", other_error)),
+            Ok(_) => Err(anyhow!("Report accepted")),
+        }
     }
 }

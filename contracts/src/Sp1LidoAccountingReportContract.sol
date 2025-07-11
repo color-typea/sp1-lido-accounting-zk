@@ -81,6 +81,8 @@ contract Sp1LidoAccountingReportContract is SecondOpinionOracle, Ownable, Pausab
 
     /// @dev Verification failed
     error VerificationError(string error_message);
+    /// @dev SP1 verifier rejected the proof
+    error Sp1VerificationError(string error_message);
 
     error BeaconBlockHashMismatch(bytes32 expected, bytes32 actual);
 
@@ -180,7 +182,14 @@ contract Sp1LidoAccountingReportContract is SecondOpinionOracle, Ownable, Pausab
         _verify_public_values(public_values);
 
         // Verify ZK-program and public values
-        ISP1Verifier(VERIFIER).verifyProof(VKEY, publicValues, proof);
+        try ISP1Verifier(VERIFIER).verifyProof(VKEY, publicValues, proof) {
+            // If SP1 verifier didn't revert - it means that proof is valid
+        } catch (bytes memory reason) {
+            if (reason.length > 0) {
+                revert Sp1VerificationError(string(reason));
+            }
+            revert Sp1VerificationError("SP1 verifier reverted without a reason");
+        }
 
         // If all checks pass - record report and state
         _recordReport(report);

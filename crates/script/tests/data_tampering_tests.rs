@@ -2,12 +2,12 @@ mod test_utils;
 
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use sp1_lido_accounting_scripts::{
     beacon_state_reader::{BeaconStateReader, StateId},
-    eth_client::{self, Sp1LidoAccountingReportContract::Sp1LidoAccountingReportContractErrors},
+    eth_client::Sp1LidoAccountingReportContract::Sp1LidoAccountingReportContractErrors,
     scripts::{prelude::BeaconStateReaderEnum, shared as shared_logic},
-    sp1_client_wrapper::{self, SP1ClientWrapper},
+    sp1_client_wrapper::SP1ClientWrapper,
 };
 
 use sp1_lido_accounting_zk_shared::{
@@ -18,39 +18,10 @@ use sp1_lido_accounting_zk_shared::{
     },
     lido::{ValidatorOps, ValidatorStatus},
 };
-use test_utils::{env::IntegrationTestEnvironment, mark_as_refslot};
+use test_utils::{env::IntegrationTestEnvironment, mark_as_refslot, TestAssertions, TestError, DEPLOY_SLOT};
 use tree_hash::TreeHash;
 
-use crate::test_utils::DEPLOY_SLOT;
-
 type WithdrawalVaultDataMutator = dyn Fn(WithdrawalVaultData) -> WithdrawalVaultData;
-
-#[derive(Debug, thiserror::Error)]
-enum TestError {
-    #[error("Proof rejected for known reason {0:?}")]
-    ContractRejected(Sp1LidoAccountingReportContractErrors),
-    #[error("Proof rejected for other reasons {0:?}")]
-    OtherRejection(eth_client::ContractError),
-    #[error("Failed to build proof {0:?}")]
-    ProofFailed(sp1_client_wrapper::Error),
-    #[error("Other error {0:?}")]
-    Other(anyhow::Error),
-}
-
-impl From<anyhow::Error> for TestError {
-    fn from(value: anyhow::Error) -> Self {
-        TestError::Other(value)
-    }
-}
-
-impl From<eth_client::ContractError> for TestError {
-    fn from(value: eth_client::ContractError) -> Self {
-        match value {
-            eth_client::ContractError::Rejection(e) => TestError::ContractRejected(e),
-            other => TestError::OtherRejection(other),
-        }
-    }
-}
 
 pub struct TamperableBeaconStateReader<T>
 where
@@ -175,8 +146,11 @@ impl TestExecutor {
             .tampered_bs_reader
             .read_beacon_state(&StateId::Slot(target_slot))
             .await?;
-        // Should read old state from untampered reader, so the old state compute will match
-        let old_bs = self.env.read_beacon_state(&StateId::Slot(previous_slot)).await?;
+
+        let old_bs = self
+            .tampered_bs_reader
+            .read_beacon_state(&StateId::Slot(previous_slot))
+            .await?;
 
         let withdrawal_vault_data = self.env.get_balance_proof(&StateId::Slot(target_slot)).await?;
         let tampered_withdrawal_vault_data = (self.withdrawal_vault_data_mutator)(withdrawal_vault_data);
@@ -212,35 +186,6 @@ impl TestExecutor {
             .submit_report_data(proof.bytes(), proof.public_values.to_vec())
             .await?;
         Ok(())
-    }
-
-    pub fn assert_failed_proof(&self, result: Result<(), TestError>) -> anyhow::Result<()> {
-        match result {
-            Err(TestError::ProofFailed(e)) => {
-                tracing::info!("Failed to create proof - as expected: {:?}", e);
-                Ok(())
-            }
-            Err(other_error) => Err(anyhow!("Other error {:#?}", other_error)),
-            Ok(_) => Err(anyhow!("Report accepted")),
-        }
-    }
-
-    pub fn assert_rejected(&self, result: Result<(), TestError>) -> anyhow::Result<()> {
-        match result {
-            Err(TestError::ContractRejected(err)) => {
-                tracing::info!("As expected, contract rejected {:#?}", err);
-                Ok(())
-            }
-            Err(other_error) => Err(anyhow!("Other error {:#?}", other_error)),
-            Ok(_txhash) => Err(anyhow!("Report accepted")),
-        }
-    }
-
-    pub fn assert_accepted(&self, result: Result<(), TestError>) -> anyhow::Result<()> {
-        match result {
-            Err(other_error) => Err(anyhow!("Error {:#?}", other_error)),
-            Ok(_) => Ok(()),
-        }
     }
 
     pub fn lido_withdrawal_credentials(&self) -> Hash256 {
@@ -338,7 +283,7 @@ async fn data_tampering_no_tampering_should_pass() -> Result<()> {
     let (executor, target_slot) = setup_executor().await?;
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_accepted(result)
+    TestAssertions::assert_accepted(result)
 }
 
 #[ignore]
@@ -370,7 +315,9 @@ async fn data_tampering_add_active_lido_validator() -> Result<()> {
     );
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_rejected(result)
+    TestAssertions::assert_rejected_with(result, |e| {
+        matches!(e, Sp1LidoAccountingReportContractErrors::BeaconBlockHashMismatch(_))
+    })
 }
 
 #[ignore]
@@ -402,7 +349,9 @@ async fn data_tampering_add_pending_lido_validator() -> Result<()> {
     );
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_rejected(result)
+    TestAssertions::assert_rejected_with(result, |e| {
+        matches!(e, Sp1LidoAccountingReportContractErrors::BeaconBlockHashMismatch(_))
+    })
 }
 
 #[ignore]
@@ -434,7 +383,9 @@ async fn data_tampering_add_exited_lido_validator() -> Result<()> {
     );
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_rejected(result)
+    TestAssertions::assert_rejected_with(result, |e| {
+        matches!(e, Sp1LidoAccountingReportContractErrors::BeaconBlockHashMismatch(_))
+    })
 }
 
 #[ignore]
@@ -461,7 +412,9 @@ async fn data_tampering_add_active_non_lido_validator() -> Result<()> {
     });
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_rejected(result)
+    TestAssertions::assert_rejected_with(result, |e| {
+        matches!(e, Sp1LidoAccountingReportContractErrors::BeaconBlockHashMismatch(_))
+    })
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -488,7 +441,7 @@ async fn data_tampering_remove_lido_validator() -> Result<()> {
     );
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_failed_proof(result)
+    TestAssertions::assert_failed_proof(result)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -539,7 +492,7 @@ async fn data_tampering_remove_multi_lido_validator() -> Result<()> {
     );
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_failed_proof(result)
+    TestAssertions::assert_failed_proof(result)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -561,7 +514,7 @@ async fn data_tampering_change_lido_to_non_lido_validator() -> Result<()> {
     );
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_failed_proof(result)
+    TestAssertions::assert_failed_proof(result)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -584,7 +537,7 @@ async fn data_tampering_change_non_lido_to_lido_validator() -> Result<()> {
     );
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_failed_proof(result)
+    TestAssertions::assert_failed_proof(result)
 }
 
 #[ignore]
@@ -607,10 +560,11 @@ async fn data_tampering_change_lido_make_exited() -> Result<()> {
     );
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_rejected(result)
+    TestAssertions::assert_rejected_with(result, |e| {
+        matches!(e, Sp1LidoAccountingReportContractErrors::BeaconBlockHashMismatch(_))
+    })
 }
 
-#[ignore]
 #[tokio::test(flavor = "multi_thread")]
 async fn data_tampering_omit_new_deposited_lido_validator() -> Result<()> {
     let (mut executor, target_slot) = setup_executor().await?;
@@ -644,12 +598,14 @@ async fn data_tampering_omit_new_deposited_lido_validator() -> Result<()> {
     );
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_rejected(result)
+    TestAssertions::assert_rejected_with(result, |e| {
+        matches!(e, Sp1LidoAccountingReportContractErrors::BeaconBlockHashMismatch(_))
+    })
 }
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
-async fn data_tampering_omit_change_to_exited_state_lido_validator() -> Result<()> {
+async fn data_tampering_omit_change_to_exited_state_lido_validator_naive() -> Result<()> {
     let (mut executor, target_slot) = setup_executor().await?;
     let lido_creds = executor.lido_withdrawal_credentials();
 
@@ -675,7 +631,41 @@ async fn data_tampering_omit_change_to_exited_state_lido_validator() -> Result<(
     );
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_rejected(result)
+    TestAssertions::assert_failed_proof(result)
+}
+
+#[ignore]
+#[tokio::test(flavor = "multi_thread")]
+async fn data_tampering_omit_change_to_exited_state_lido_validator_adjust_old_state() -> Result<()> {
+    let (mut executor, target_slot) = setup_executor().await?;
+    let lido_creds = executor.lido_withdrawal_credentials();
+
+    const EXITED_VALIDATOR_TO_REMOVE: usize = 1;
+
+    let mutator = move |beacon_state: BeaconState| {
+        let mut new_bs = beacon_state.clone();
+        let epoch = new_bs.epoch();
+        let all_lido_exited = all_validator_indices(&beacon_state, |validator| {
+            validator.withdrawal_credentials == lido_creds && validator.status(epoch) == ValidatorStatus::Exited
+        });
+
+        let validator_idx = all_lido_exited[EXITED_VALIDATOR_TO_REMOVE]; // picking the second exited validator
+        let mut new_validators: Vec<Validator> = new_bs.validators.to_vec();
+        new_validators.remove(validator_idx);
+        new_bs.validators = new_validators.into();
+        let mut new_balances: Vec<u64> = new_bs.balances.to_vec();
+        new_balances.remove(validator_idx);
+        new_bs.balances = new_balances.into();
+        new_bs
+    };
+
+    executor.set_bs_mutator(StateId::Slot(DEPLOY_SLOT), MODIFY_BEACON_BLOCK_HASH, mutator);
+    executor.set_bs_mutator(StateId::Slot(target_slot), MODIFY_BEACON_BLOCK_HASH, mutator);
+
+    let result = executor.run_test(target_slot).await;
+    TestAssertions::assert_rejected_with(result, |e| {
+        matches!(e, Sp1LidoAccountingReportContractErrors::BeaconBlockHashMismatch(_))
+    })
 }
 
 // this one is currently impossible as the base state (at test_utils::DEPLOY_SLOT)
@@ -709,7 +699,9 @@ async fn data_tampering_omit_pending_lido_validator() -> Result<()> {
     );
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_rejected(result)
+    TestAssertions::assert_rejected_with(result, |e| {
+        matches!(e, Sp1LidoAccountingReportContractErrors::BeaconBlockHashMismatch(_))
+    })
 }
 
 #[ignore]
@@ -732,7 +724,9 @@ async fn data_tampering_balance_change_lido_validator_balance() -> Result<()> {
     );
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_rejected(result)
+    TestAssertions::assert_rejected_with(result, |e| {
+        matches!(e, Sp1LidoAccountingReportContractErrors::BeaconBlockHashMismatch(_))
+    })
 }
 
 #[ignore]
@@ -757,7 +751,9 @@ async fn data_tampering_balance_change_multi_lido_validator_balance() -> Result<
     );
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_rejected(result)
+    TestAssertions::assert_rejected_with(result, |e| {
+        matches!(e, Sp1LidoAccountingReportContractErrors::BeaconBlockHashMismatch(_))
+    })
 }
 
 #[ignore]
@@ -788,7 +784,9 @@ async fn data_tampering_balance_change_lido_validator_balance_cancel_out() -> Re
     );
 
     let result = executor.run_test(target_slot).await;
-    executor.assert_rejected(result)
+    TestAssertions::assert_rejected_with(result, |e| {
+        matches!(e, Sp1LidoAccountingReportContractErrors::BeaconBlockHashMismatch(_))
+    })
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -803,7 +801,7 @@ async fn data_tampering_withdrawal_vault_tampered_balance() -> Result<()> {
         tampered_wvd
     }));
     let result = executor.run_test(target_slot).await;
-    executor.assert_failed_proof(result)
+    TestAssertions::assert_failed_proof(result)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -821,7 +819,7 @@ async fn data_tampering_withdrawal_vault_tampered_proof() -> Result<()> {
         tampered_wvd
     }));
     let result = executor.run_test(target_slot).await;
-    executor.assert_failed_proof(result)
+    TestAssertions::assert_failed_proof(result)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -834,5 +832,5 @@ async fn data_tampering_withdrawal_vault_different_slot() -> Result<()> {
 
     executor.set_withdrawal_vault_mutator(Box::new(move |_wvd| other_slot_wv_data.clone()));
     let result = executor.run_test(target_slot).await;
-    executor.assert_failed_proof(result)
+    TestAssertions::assert_failed_proof(result)
 }
